@@ -128,7 +128,10 @@ python main.py \
 ```bash
 python -m src
 # 或生产模式：
+# -linux
 gunicorn -w 2 -b 0.0.0.0:5000 'src.webapp:app'
+# -windows
+python -m waitress --host=0.0.0.0 --port=5000 src.webapp:app
 ```
 
 在浏览器中打开：`http://127.0.0.1:5000`
