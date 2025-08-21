@@ -1,0 +1,7 @@
+FaceGrowthApp.spec
+build/
+dist/
+jobs/
+uploads/
+src/__pycache__/
+__pycache__/
