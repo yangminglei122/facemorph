@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from flask import Flask, request, render_template_string, send_file, jsonify, make_response
 from werkzeug.utils import secure_filename
 
-from .pipeline import run_pipeline
+from src.pipeline import run_pipeline
 
 app = Flask(__name__)
 

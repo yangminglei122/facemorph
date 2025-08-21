@@ -3,12 +3,28 @@ import os
 import cv2
 import numpy as np
 
-from utils import list_images_sorted, ensure_dir
-from detect import LandmarkDetector
-from align import select_reference_index, build_similarity_reference, warp_with_similarity
-from morph import generate_crossfade_frames, generate_flow_morph_frames
-from exporter import save_gif, save_mp4
-
+# 修复导入路径问题，确保在PyInstaller打包环境中能正确导入
+try:
+    # 尝试相对导入（开发环境）
+    from utils import list_images_sorted, ensure_dir
+    from detect import LandmarkDetector
+    from align import select_reference_index, build_similarity_reference, warp_with_similarity
+    from morph import generate_crossfade_frames, generate_flow_morph_frames
+    from exporter import save_gif, save_mp4
+except ImportError:
+    # 在PyInstaller打包环境中，尝试从项目根目录导入
+    import sys
+    import os
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # 添加项目根目录到sys.path
+        root_dir = sys._MEIPASS
+        if root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+    from utils import list_images_sorted, ensure_dir
+    from detect import LandmarkDetector
+    from align import select_reference_index, build_similarity_reference, warp_with_similarity
+    from morph import generate_crossfade_frames, generate_flow_morph_frames
+    from exporter import save_gif, save_mp4
 
 ProgressCallback = Callable[[float, str], None]
 

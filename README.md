@@ -246,32 +246,26 @@ pip install -r requirements.txt
 
 2. 使用PyInstaller进行打包：
 
-**Linux/macOS：**
+**所有平台：**
 ```bash
-pyinstaller -F -n FaceGrowthApp -c -w -i NONE --add-data "src:src" --collect-all mediapipe --collect-data imageio_ffmpeg --hidden-import=flask src/__main__.py
+pyinstaller FaceGrowthApp.spec
 ```
 
-**Windows：**
-```bash
-pyinstaller -F -n FaceGrowthApp -c -w -i NONE --add-data "src;src" --collect-all mediapipe --collect-data imageio_ffmpeg src/__main__.py
-```
-
-参数说明：
-- `-F`：打包为单个可执行文件
-- `-n FaceGrowthApp`：指定生成的可执行文件名
-- `-c`：显示控制台窗口（用于查看日志）
-- `-w`：禁用控制台窗口（适用于GUI应用）
-- `-i NONE`：不使用图标
-- `--add-data "src:src"`：将src目录添加到打包文件中
-- `--collect-all mediapipe`：收集mediapipe的所有依赖
-- `--collect-data imageio_ffmpeg`：收集imageio_ffmpeg的数据文件
+打包配置说明：
+- 使用 `FaceGrowthApp.spec` 配置文件进行打包，确保所有依赖正确包含
+- 入口文件为 `src/__main__.py`
+- 包含必要的数据文件：`src` 目录和核心模块文件
+- 隐藏导入多个模块：`flask`, `imageio`, `imageio_ffmpeg`, `cv2`, `numpy`, `PIL`, `mediapipe`, `scipy`, `tqdm`
+- 自动收集 `mediapipe` 和 `imageio_ffmpeg` 的所有依赖文件
+- 启用 UPX 压缩以减小打包文件大小
+- 禁用控制台窗口（GUI应用模式）
+- 不使用图标文件
 
 3. 打包完成后，可执行文件将位于 `dist/` 目录中。
 
 #### 不同平台的打包注意事项
 
-- **Linux/macOS**：使用冒号 `:` 分隔路径，如 `--add-data "src:src"`
-- **Windows**：使用分号 `;` 分隔路径，如 `--add-data "src;src"`
+- **跨平台兼容性**：使用 `FaceGrowthApp.spec` 配置文件打包时，已自动处理不同平台的路径分隔符差异
 - **macOS**：可能需要额外的权限设置，确保打包后的应用有访问摄像头和文件系统的权限
 - **Windows**：打包后的exe文件可能会被杀毒软件误报，需要添加到白名单
 - **所有平台**：打包过程可能需要较长时间，请耐心等待
@@ -294,13 +288,15 @@ dist/
 #### 故障排除和常见问题解答
 
 1. **打包失败或运行时缺少模块**：
-   - 确保使用了 `--collect-all mediapipe` 和 `--collect-data imageio_ffmpeg` 参数
+   - 确保使用了 `FaceGrowthApp.spec` 配置文件进行打包，该文件已正确配置所有必要的依赖项
    - 检查是否所有依赖都已正确安装
+   - 如果缺少特定模块，可以在 `FaceGrowthApp.spec` 的 `hiddenimports` 列表中添加
 
 2. **打包后的应用无法启动**：
    - 检查是否有杀毒软件阻止了应用运行
    - 在Windows上尝试以管理员身份运行
    - 确保应用有必要的文件系统访问权限
+   - 如果是由于UPX压缩导致的问题，可以尝试在 `FaceGrowthApp.spec` 中设置 `upx=False`
 
 3. **Web界面无法访问**：
    - 确认应用已成功启动（查看控制台输出）
@@ -320,15 +316,21 @@ dist/
    - 上传示例图片或指定输入目录
    - 检查是否能正常生成GIF和MP4文件
 
-2. **跨平台兼容性测试**：
+2. **配置文件测试**：
+   - 验证 `FaceGrowthApp.spec` 配置文件是否正确包含了所有必要的依赖项
+   - 检查打包后的应用是否能正常访问所有资源文件
+   - 确认隐藏导入的模块是否都能正常工作
+
+3. **跨平台兼容性测试**：
    - 在目标平台上运行打包后的应用
    - 验证所有功能是否正常工作
    - 检查文件路径和权限问题
 
-3. **性能测试**：
+4. **性能测试**：
    - 处理多张图片，观察内存和CPU使用情况
    - 比较打包前后应用的性能差异
    - 验证GPU加速是否正常工作（如果启用）
+   - 检查UPX压缩对性能的影响
 
 通过以上测试，可以确保打包后的应用在各种环境下都能正常运行。
 
