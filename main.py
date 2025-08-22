@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ref_image", type=str, help="外部参考图像路径(不参与最终效果生成)")
     p.add_argument("--batch_size", type=int, default=50, help="分批处理时的批次大小(默认50，图像数量超过此值时自动分批)")
     p.add_argument("--generate_gif", action="store_true", help="是否生成GIF文件(默认生成)")
+    p.add_argument("--streaming_save", action="store_true", help="是否使用流式保存以减少内存使用(处理大量图像时推荐使用)")
     return p.parse_args()
 
 
@@ -400,11 +401,19 @@ def process_images_in_batches(image_paths: List[str], args, batch_size: int) -> 
         
         print(f"批次 {batch_idx + 1} 处理完成，当前内存使用: {get_memory_usage():.1f} MB")
     
+    # 检查对齐后的图像数量
+    if len(all_aligned_images) < 2:
+        print(f"警告：对齐后有效图像数量不足（{len(all_aligned_images)}张），无法生成效果")
+        # 创建一个空的结果目录
+        os.makedirs(args.output_dir, exist_ok=True)
+        print("处理完成！")
+        return
+    
     # 生成最终效果
     print("\n生成最终效果...")
     if args.morph == "flow":
         frames = generate_flow_morph_frames(
-            all_aligned_images, all_aligned_points, args.video_fps, 
+            all_aligned_images, all_aligned_points, args.video_fps,
             args.transition_seconds, args.hold_seconds, timestamps=all_aligned_timestamps,
             flow_strength=args.flow_strength, face_protect=args.face_protect,
             sharpen_amount=args.sharpen, easing=args.easing,
@@ -413,14 +422,17 @@ def process_images_in_batches(image_paths: List[str], args, batch_size: int) -> 
         )
     else:
         frames = generate_crossfade_frames(
-            all_aligned_images, args.video_fps, args.transition_seconds, 
+            all_aligned_images, args.video_fps, args.transition_seconds,
             args.hold_seconds, timestamps=all_aligned_timestamps,
             easing=args.easing, ease_a=args.ease_a, ease_b=args.ease_b,
             ease_p1=args.ease_p1, ease_p3=args.ease_p3
         )
     
     # 保存结果
-    save_results(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
+    if args.streaming_save:
+        save_results_streaming(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
+    else:
+        save_results(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
 
 
 def select_reference_from_batches(image_paths: List[str], detector, manual_ref_idx: Optional[int], batch_size: int) -> int:
@@ -509,6 +521,11 @@ def process_batch(batch_paths: List[str], batch_timestamps: List[Optional[dt.dat
             except Exception as e:
                 print(f"警告：图像 {batch_paths[i]} 对齐失败: {e}")
                 continue
+        else:
+            # 人脸检测或关键点检测失败
+            filename = os.path.basename(batch_paths[i])
+            print(f"警告：图像 {batch_paths[i]} 人脸检测或关键点检测失败，文件: {filename}")
+            continue
     
     return aligned_images, aligned_points, aligned_timestamps
 
@@ -537,6 +554,10 @@ def process_alignment_and_morphing(images: List[np.ndarray], face_points_list: L
             except Exception as e:
                 print(f"警告：图像 {i} 对齐失败: {e}")
                 continue
+        else:
+            # 人脸检测或关键点检测失败
+            print(f"警告：图像 {i} 人脸检测或关键点检测失败")
+            continue
     
     # 过滤掉None值
     aligned_images = [img for img in aligned_by_index if img is not None]
@@ -551,7 +572,7 @@ def process_alignment_and_morphing(images: List[np.ndarray], face_points_list: L
     print("生成变形效果...")
     if args.morph == "flow":
         frames = generate_flow_morph_frames(
-            aligned_images, aligned_points, args.video_fps, 
+            aligned_images, aligned_points, args.video_fps,
             args.transition_seconds, args.hold_seconds, timestamps=aligned_timestamps,
             flow_strength=args.flow_strength, face_protect=args.face_protect,
             sharpen_amount=args.sharpen, easing=args.easing,
@@ -560,19 +581,27 @@ def process_alignment_and_morphing(images: List[np.ndarray], face_points_list: L
         )
     else:
         frames = generate_crossfade_frames(
-            aligned_images, args.video_fps, args.transition_seconds, 
+            aligned_images, args.video_fps, args.transition_seconds,
             args.hold_seconds, timestamps=aligned_timestamps,
             easing=args.easing, ease_a=args.ease_a, ease_b=args.ease_b,
             ease_p1=args.ease_p1, ease_p3=args.ease_p3
         )
     
     # 保存结果
-    save_results(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
+    if args.streaming_save:
+        save_results_streaming(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
+    else:
+        save_results(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
 
 
 def save_results(frames: List[np.ndarray], output_dir: str, gif_fps: int, video_fps: int, generate_gif: bool = True) -> None:
     """保存结果文件"""
     os.makedirs(output_dir, exist_ok=True)
+    
+    # 处理生成器类型的数据
+    if hasattr(frames, '__iter__') and not hasattr(frames, '__getitem__'):
+        # 如果是生成器，需要先转换为列表，以避免在多次遍历时耗尽
+        frames = list(frames)
     
     # 保存GIF（可选）
     if generate_gif:
@@ -584,6 +613,36 @@ def save_results(frames: List[np.ndarray], output_dir: str, gif_fps: int, video_
     mp4_path = os.path.join(output_dir, "morph.mp4")
     print(f"保存MP4: {mp4_path}")
     save_mp4(frames, mp4_path, video_fps)
+    
+    print("处理完成！")
+
+
+def save_results_streaming(frame_generator, output_dir: str, gif_fps: int, video_fps: int, generate_gif: bool = True) -> None:
+    """流式保存结果文件，逐帧写入以减少内存使用"""
+    from exporter import save_mp4_streaming, save_gif
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 如果需要生成GIF，我们需要先收集所有帧（因为GIF需要所有帧）
+    if generate_gif:
+        print("收集帧数据以生成GIF...")
+        frames = list(frame_generator)
+        print(f"收集到 {len(frames)} 帧数据")
+        
+        # 保存GIF
+        gif_path = os.path.join(output_dir, "morph.gif")
+        print(f"保存GIF: {gif_path}")
+        save_gif(frames, gif_path, gif_fps)
+        
+        # 保存MP4（使用流式保存）
+        mp4_path = os.path.join(output_dir, "morph.mp4")
+        print(f"流式保存MP4: {mp4_path}")
+        save_mp4_streaming(iter(frames), mp4_path, video_fps)
+    else:
+        # 只保存MP4，直接使用流式保存
+        mp4_path = os.path.join(output_dir, "morph.mp4")
+        print(f"流式保存MP4: {mp4_path}")
+        save_mp4_streaming(frame_generator, mp4_path, video_fps)
     
     print("处理完成！")
 
