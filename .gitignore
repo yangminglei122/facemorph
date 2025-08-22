@@ -2,5 +2,7 @@ build/
 dist/
 jobs/
 uploads/
+images2/
+logs/
 src/__pycache__/
 __pycache__/

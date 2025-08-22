@@ -169,16 +169,38 @@ def compute_interocular_distance(face_points: np.ndarray) -> Optional[float]:
 
 
 def compute_roll_degrees(face_points: np.ndarray) -> float:
-    if face_points is None or len(face_points) < 264:
+    """计算人脸旋转角度，基于眼睛关键点"""
+    if face_points is None or len(face_points) < 468:
         return 0.0
-    right_eye = face_points[33]
-    left_eye = face_points[263]
-    dy = float(left_eye[1] - right_eye[1])
-    dx = float(left_eye[0] - right_eye[0])
+    
+    # 只使用最基本的眼睛关键点：33(右眼) 和 263(左眼)
+    # 这是MediaPipe FaceMesh的标准索引
+    right_eye_idx = 33
+    left_eye_idx = 263
+    
+    if right_eye_idx >= len(face_points) or left_eye_idx >= len(face_points):
+        return 0.0
+    
+    right_eye = face_points[right_eye_idx]
+    left_eye = face_points[left_eye_idx]
+    
+    # 计算眼睛连线与水平线的夹角
+    dy = float(left_eye[1] - right_eye[1])  # 左眼y - 右眼y
+    dx = float(left_eye[0] - right_eye[0])  # 左眼x - 右眼x
+    
+    # 如果dx太小，说明眼睛几乎垂直，无法计算角度
     if abs(dx) < 1e-6:
         return 0.0
+    
+    # 计算角度
     angle_rad = np.arctan2(dy, dx)
     angle_deg = float(np.degrees(angle_rad))
+    
+    # 角度合理性检查
+    if abs(angle_deg) > 45.0:
+        print(f"警告：计算出的旋转角度过大 ({angle_deg:.2f}°)，可能检测有误，使用0°")
+        return 0.0
+    
     return angle_deg
 
 
