@@ -10,7 +10,9 @@ datas = [
     ('align.py', '.'),
     ('morph.py', '.'),
     ('exporter.py', '.'),
+    ('scripts/logging_hook.py', 'scripts'),  # 添加日志hook脚本
 ]
+
 binaries = []
 hiddenimports = [
     'flask',
@@ -37,11 +39,12 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['scripts/logging_hook.py'],  # 添加runtime hook
     excludes=[],
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

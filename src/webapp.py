@@ -173,7 +173,8 @@ legend{font-size:14px;color:#444}
     <label>ease_p3: <input type="number" step="0.1" name="ease_p3" value="{{ease_p3}}"></label><br/>
     <label>使用GPU: <input type="checkbox" name="use_gpu" {% if use_gpu %}checked{% endif %}></label>
     <label>保存对齐帧: <input type="checkbox" name="save_aligned" {% if save_aligned %}checked{% endif %}></label>
-    <label>生成GIF: <input type="checkbox" name="generate_gif" {% if generate_gif %}checked{% endif %}></label><br/>
+    <label>生成GIF: <input type="checkbox" name="generate_gif" {% if generate_gif %}checked{% endif %}></label>
+    <label>流式保存(减少内存): <input type="checkbox" name="streaming_save" {% if streaming_save %}checked{% endif %}></label><br/>
   </fieldset>
   <button type="submit">开始生成</button>
 </form>
@@ -275,6 +276,7 @@ DEFAULTS = {
     "use_gpu": False,
     "save_aligned": False,
     "generate_gif": True,
+    "streaming_save": False,
     "ref_index": "",
 }
 
@@ -299,14 +301,14 @@ def run():
     for k in DEFAULTS.keys():
         v = request.form.get(k)
         if v is None:
-            if k in ("use_gpu", "save_aligned", "generate_gif"):
+            if k in ("use_gpu", "save_aligned", "generate_gif", "streaming_save"):
                 cfg[k] = False
             elif k == "ref_index":
                 cfg[k] = None  # 空字符串转换为None
             else:
                 cfg[k] = DEFAULTS[k]
         else:
-            if k in ("use_gpu", "save_aligned", "generate_gif"):
+            if k in ("use_gpu", "save_aligned", "generate_gif", "streaming_save"):
                 cfg[k] = True
             elif k == "ref_index":
                 # 处理ref_index参数

@@ -7,3 +7,4 @@ images3/
 logs/
 src/__pycache__/
 __pycache__/
+output.log

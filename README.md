@@ -185,6 +185,7 @@ python main.py --input_dir ./images --output_dir ./output --batch_size 30 --gif_
 启动 Web 服务：
 ```bash
 python -m src
+python -m src >  ./logs/output.log 2>&1 
 # 或生产模式：
 # -linux
 gunicorn -w 2 -b 0.0.0.0:5000 'src.webapp:app'
