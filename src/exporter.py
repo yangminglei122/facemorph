@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import List
 
 import imageio
@@ -7,24 +8,38 @@ import cv2
 
 
 def _to_rgb_frames(frames: List[np.ndarray]) -> List[np.ndarray]:
-    rgb_frames: List[np.ndarray] = []
-    for f in frames:
-        arr = np.asarray(f)
-        if arr.dtype != np.uint8:
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-        if arr.ndim == 2:
-            arr = np.stack([arr, arr, arr], axis=2)
-        elif arr.ndim == 3 and arr.shape[2] == 4:
-            b, g, r, a = np.split(arr, 4, axis=2)
-            arr = np.concatenate([r, g, b], axis=2)
-        elif arr.ndim == 3 and arr.shape[2] == 3:
-            arr = arr[:, :, ::-1]
-        else:
-            arr = arr.reshape((arr.shape[0], arr.shape[1], -1))
-            if arr.shape[2] == 3:
-                arr = arr[:, :, ::-1]
-        rgb_frames.append(arr)
-    return rgb_frames
+    """优化的帧格式转换函数，使用向量化操作提高性能"""
+    if not frames:
+        return []
+    
+    # 批量处理所有帧
+    frames_array = np.array(frames)
+    
+    # 数据类型标准化
+    if frames_array.dtype != np.uint8:
+        frames_array = np.clip(frames_array, 0, 255).astype(np.uint8)
+    
+    # 处理单通道图像
+    if frames_array.ndim == 3 and frames_array.shape[-1] == 1:
+        frames_array = np.repeat(frames_array, 3, axis=-1)
+    elif frames_array.ndim == 3 and frames_array.shape[-1] == 2:
+        # 2通道图像，添加第三个通道
+        frames_array = np.concatenate([frames_array, frames_array[:, :, :1]], axis=-1)
+    
+    # 处理4通道图像（BGRA -> RGB）
+    if frames_array.ndim == 4 and frames_array.shape[-1] == 4:
+        # 批量转换 BGRA -> RGB
+        frames_array = frames_array[:, :, :, [2, 1, 0]]  # BGR -> RGB
+    
+    # 处理3通道图像（BGR -> RGB）
+    elif frames_array.ndim == 4 and frames_array.shape[-1] == 3:
+        frames_array = frames_array[:, :, :, ::-1]  # BGR -> RGB
+    
+    # 确保形状正确
+    if frames_array.ndim == 4:
+        return [frames_array[i] for i in range(frames_array.shape[0])]
+    else:
+        return [frames_array]
 
 
 def save_gif(frames: List[np.ndarray], path: str, fps: int = 15) -> None:
@@ -70,3 +85,132 @@ def save_mp4(frames: List[np.ndarray], path: str, fps: int = 30) -> None:
         bgr = fr[:, :, ::-1]
         vw.write(bgr)
     vw.release()
+
+
+def save_outputs_parallel(frames: List[np.ndarray], gif_path: str, mp4_path: str, gif_fps: int = 15, mp4_fps: int = 30, progress_cb=None, optimize_speed: bool = True) -> None:
+    """并行保存GIF和MP4文件，提高保存速度
+    
+    Args:
+        frames: 要保存的帧列表
+        gif_path: GIF文件保存路径
+        mp4_path: MP4文件保存路径
+        gif_fps: GIF帧率
+        mp4_fps: MP4帧率
+        progress_cb: 进度回调函数
+        optimize_speed: 是否优化速度（降低质量以提高速度）
+    """
+    if not frames:
+        raise ValueError("没有帧数据可保存")
+    
+    if progress_cb:
+        progress_cb(0.0, "准备保存文件...")
+    
+    # 预先转换帧格式，避免重复转换
+    if progress_cb:
+        progress_cb(0.1, "转换帧格式...")
+    rgb_frames = _to_rgb_frames(frames)
+    
+    if progress_cb:
+        progress_cb(0.2, "创建输出目录...")
+    
+    # 创建保存目录
+    os.makedirs(os.path.dirname(gif_path), exist_ok=True)
+    os.makedirs(os.path.dirname(mp4_path), exist_ok=True)
+    
+    # 根据优化设置调整参数
+    if optimize_speed:
+        gif_quality = 5  # 降低GIF质量以提高速度
+        mp4_quality = 6  # 降低MP4质量以提高速度
+        mp4_preset = "ultrafast"  # 使用最快的编码预设
+    else:
+        gif_quality = 10  # 标准GIF质量
+        mp4_quality = 8   # 标准MP4质量
+        mp4_preset = "medium"  # 使用平衡的编码预设
+    
+    # 定义保存函数
+    def save_gif_thread():
+        try:
+            if progress_cb:
+                progress_cb(0.3, "保存GIF文件...")
+            duration = 1.0 / max(1, gif_fps)
+            # 使用优化的GIF保存参数
+            imageio.mimsave(gif_path, rgb_frames, format="GIF", duration=duration, optimize=True, quality=gif_quality)
+            if progress_cb:
+                progress_cb(0.6, "GIF保存完成")
+        except Exception as e:
+            print(f"GIF保存失败: {e}")
+            raise
+    
+    def save_mp4_thread():
+        try:
+            if progress_cb:
+                progress_cb(0.4, "保存MP4文件...")
+            # 优先使用libx264编码器，带速度优化
+            if optimize_speed:
+                imageio.mimsave(mp4_path, rgb_frames, fps=mp4_fps, codec="libx264", 
+                               quality=mp4_quality, preset=mp4_preset, macro_block_size=None)
+            else:
+                imageio.mimsave(mp4_path, rgb_frames, fps=mp4_fps, codec="libx264", 
+                               quality=mp4_quality, macro_block_size=None)
+            
+            if not (os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 0):
+                raise Exception("libx264编码失败")
+            if progress_cb:
+                progress_cb(0.7, "MP4保存完成")
+        except Exception:
+            try:
+                if progress_cb:
+                    progress_cb(0.45, "MP4编码器回退...")
+                # 回退到默认编码器
+                imageio.mimsave(mp4_path, rgb_frames, fps=mp4_fps)
+                if not (os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 0):
+                    raise Exception("默认编码器失败")
+                if progress_cb:
+                    progress_cb(0.7, "MP4保存完成")
+            except Exception:
+                if progress_cb:
+                    progress_cb(0.5, "MP4使用OpenCV编码...")
+                # 最后回退到OpenCV
+                h, w = rgb_frames[0].shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                vw = cv2.VideoWriter(mp4_path, fourcc, mp4_fps, (w, h))
+                if not vw.isOpened():
+                    # 最后尝试保存为AVI
+                    if progress_cb:
+                        progress_cb(0.55, "MP4保存为AVI格式...")
+                    alt_path = os.path.splitext(mp4_path)[0] + ".avi"
+                    fourcc2 = cv2.VideoWriter_fourcc(*"XVID")
+                    vw = cv2.VideoWriter(alt_path, fourcc2, mp4_fps, (w, h))
+                    if not vw.isOpened():
+                        raise RuntimeError("无法创建视频文件")
+                    for fr in rgb_frames:
+                        bgr = fr[:, :, ::-1]
+                        vw.write(bgr)
+                    vw.release()
+                    if progress_cb:
+                        progress_cb(0.7, "AVI保存完成")
+                    return
+                
+                for fr in rgb_frames:
+                    bgr = fr[:, :, ::-1]
+                    vw.write(bgr)
+                vw.release()
+                if progress_cb:
+                    progress_cb(0.7, "MP4保存完成")
+    
+    if progress_cb:
+        progress_cb(0.25, "启动并行保存线程...")
+    
+    # 启动并行线程
+    gif_thread = threading.Thread(target=save_gif_thread)
+    mp4_thread = threading.Thread(target=save_mp4_thread)
+    
+    gif_thread.start()
+    mp4_thread.start()
+    
+    # 等待两个线程完成
+    gif_thread.join()
+    mp4_thread.join()
+    
+    if progress_cb:
+        progress_cb(1.0, "所有文件保存完成")

@@ -2,6 +2,7 @@ import argparse
 import os
 import datetime as dt
 from typing import List, Optional, Tuple
+import gc
 
 import cv2
 import numpy as np
@@ -39,10 +40,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_aligned", action="store_true", help="是否保存对齐后的静态帧")
     p.add_argument("--ref_index", type=int, help="手动指定参考图索引(0-based，不指定则自动选择)")
     p.add_argument("--ref_image", type=str, help="外部参考图像路径(不参与最终效果生成)")
+    p.add_argument("--batch_size", type=int, default=50, help="分批处理时的批次大小(默认50，图像数量超过此值时自动分批)")
+    p.add_argument("--generate_gif", action="store_true", help="是否生成GIF文件(默认生成)")
     return p.parse_args()
 
 
 def load_images(paths: List[str]) -> List[np.ndarray]:
+    """加载多张图像到内存"""
     images = []
     for p in paths:
         img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -52,6 +56,27 @@ def load_images(paths: List[str]) -> List[np.ndarray]:
             raise RuntimeError(f"无法读取图像: {p}")
         images.append(img)
     return images
+
+
+def load_single_image(image_path: str) -> np.ndarray:
+    """加载单张图像"""
+    img = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"无法读取图像: {image_path}")
+    return img
+
+
+def get_memory_usage() -> float:
+    """获取当前内存使用量（MB）"""
+    try:
+        import psutil
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        return memory_info.rss / 1024 / 1024  # 转换为MB
+    except ImportError:
+        return 0.0
 
 
 def extract_timestamps(paths: List[str], sort: str) -> List[Optional[dt.datetime]]:
@@ -175,7 +200,18 @@ def _debug_angle_calculation(pts: np.ndarray) -> None:
             print(f"    其他特征角度中位数: {other_median:.2f}°")
         
         if eye_angles and other_angles:
-            final_angle = eye_median * 0.7 + other_median * 0.3
+            # 使用向量平均法计算加权角度，以正确处理角度的周期性
+            eye_rad = np.radians(eye_median)
+            other_rad = np.radians(other_median)
+            # 将角度转换为向量分量
+            eye_x, eye_y = np.cos(eye_rad), np.sin(eye_rad)
+            other_x, other_y = np.cos(other_rad), np.sin(other_rad)
+            # 计算加权向量分量
+            final_x = eye_x * 0.7 + other_x * 0.3
+            final_y = eye_y * 0.7 + other_y * 0.3
+            # 将向量转换回角度
+            final_rad = np.arctan2(final_y, final_x)
+            final_angle = np.degrees(final_rad)
             print(f"    加权最终角度: {final_angle:.2f}°")
         elif eye_angles:
             print(f"    最终角度: {eye_median:.2f}°")
@@ -185,14 +221,10 @@ def _debug_angle_calculation(pts: np.ndarray) -> None:
         print("    无法计算任何角度")
 
 
-def main() -> None:
-    args = parse_args()
-
-    image_paths = list_images_sorted(args.input_dir, sort=args.sort)
-    if len(image_paths) < 2:
-        raise SystemExit("至少需要两张图片")
-
-    print(f"读取 {len(image_paths)} 张图片，排序方式: {args.sort}")
+def process_images_normal(image_paths: List[str], args) -> None:
+    """正常处理图像（图像数量较少时）"""
+    print("使用正常处理模式")
+    
     images = load_images(image_paths)
     
     # 提取时间戳信息
@@ -206,7 +238,7 @@ def main() -> None:
     
     face_points_list = [d.face_points for d in detections]
     
-        # 处理参考图选择
+    # 处理参考图选择
     external_ref_points = None
     if args.ref_image:
         # 使用外部参考图像
@@ -270,92 +302,313 @@ def main() -> None:
         # 外部参考图像不参与最终效果生成，所以ref_img_warped设为None
         ref_img_warped = None
 
-    aligned_by_index: List[Optional[np.ndarray]] = [None] * len(images)
-    aligned_points_by_index: List[Optional[np.ndarray]] = [None] * len(images)
+    # 继续处理...
+    process_alignment_and_morphing(images, face_points_list, ref_pts_target, M_ref_total, 
+                                 ref_img_warped, ref_idx, timestamps, args)
+
+
+def process_images_in_batches(image_paths: List[str], args, batch_size: int) -> None:
+    """分批处理图像（图像数量较多时，避免内存不足）"""
+    print("使用分批处理模式")
     
-    # 只有当参考图来自序列时才添加到对齐结果中
+    # 提取时间戳信息
+    timestamps = extract_timestamps(image_paths, args.sort)
+    print(f"提取到 {len([t for t in timestamps if t is not None])} 个有效时间戳")
+    
+    # 首先处理参考图选择
+    detector = LandmarkDetector()
+    
+    # 如果指定了外部参考图像
+    external_ref_points = None
+    if args.ref_image:
+        external_ref_points = process_external_reference_image(args.ref_image, detector)
+        if external_ref_points is not None:
+            print(f"使用外部参考图像: {args.ref_image}")
+            ref_idx = -1
+        else:
+            print(f"外部参考图像处理失败，将使用序列中的图像")
+            ref_idx = None
+    else:
+        ref_idx = None
+    
+    # 如果使用序列中的图像作为参考，需要先确定参考图
+    if ref_idx is None:
+        print("确定参考图...")
+        ref_idx = select_reference_from_batches(image_paths, detector, args.ref_index, batch_size)
+    
+    detector.close()
+    
     if ref_idx >= 0:
-        aligned_by_index[ref_idx] = ref_img_warped
-        aligned_points_by_index[ref_idx] = ref_pts_target
-
-    for i, (img, det) in enumerate(zip(images, detections)):
-        # 跳过参考图（如果它是外部参考图，ref_idx为-1，所以不会跳过任何图像）
-        if ref_idx >= 0 and i == ref_idx:
-            continue
-        if det.face_points is None:
-            filename = os.path.basename(image_paths[i])
-            print(f"跳过：第 {i} 张未检测到人脸关键点。文件: {filename}")
-            continue
-        warped_img, warped_pts = warp_with_similarity(img, det.face_points, ref_pts_target, (target_h, target_w))
-        aligned_by_index[i] = warped_img
-        aligned_points_by_index[i] = warped_pts
-
-    aligned_images: List[np.ndarray] = [im for im in aligned_by_index if im is not None]
-    aligned_points: List[Optional[np.ndarray]] = [pts for pts in aligned_points_by_index if pts is not None]
-
-    if len(aligned_images) < 2:
-        raise SystemExit("有效对齐图像不足两张，无法生成渐变")
-
-    # 为对齐后的图像创建对应的时间戳列表
-    aligned_timestamps = []
-    for i, (img, det) in enumerate(zip(images, detections)):
-        if det.face_points is not None:
-            # 只有当图像被成功对齐时才添加时间戳
-            if aligned_by_index[i] is not None:
-                aligned_timestamps.append(timestamps[i])
+        print(f"参考图索引: {ref_idx} -> {os.path.basename(image_paths[ref_idx])}")
     
+    # 分批处理图像
+    target_h, target_w = args.height, args.width
+    
+    # 构建参考几何
+    if ref_idx >= 0:
+        # 加载参考图像
+        ref_img = load_single_image(image_paths[ref_idx])
+        ref_det = LandmarkDetector()
+        ref_detection = ref_det.detect(ref_img)
+        ref_det.close()
+        
+        if ref_detection.face_points is None:
+            ref_filename = os.path.basename(image_paths[ref_idx])
+            raise SystemExit(f"参考图未检测到人脸关键点，无法继续。参考图文件: {ref_filename}")
+        
+        ref_pts_target, M_ref_total = build_similarity_reference(ref_detection.face_points, (target_h, target_w), subject_scale=args.subject_scale)
+        ref_img_warped = cv2.warpAffine(ref_img, M_ref_total, (target_w, target_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        
+        # 释放参考图像内存
+        del ref_img
+        del ref_detection
+    else:
+        # 使用外部参考图像
+        if external_ref_points is None:
+            raise SystemExit("外部参考图像处理失败，无法继续")
+        
+        ref_pts_target, M_ref_total = build_similarity_reference(external_ref_points, (target_h, target_w), subject_scale=args.subject_scale)
+        ref_img_warped = None
+    
+    # 分批处理图像
+    total_batches = (len(image_paths) + batch_size - 1) // batch_size
+    all_aligned_images = []
+    all_aligned_points = []
+    all_aligned_timestamps = []
+    
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(image_paths))
+        batch_paths = image_paths[start_idx:end_idx]
+        
+        print(f"\n处理批次 {batch_idx + 1}/{total_batches} (图像 {start_idx}-{end_idx-1})")
+        
+        # 处理当前批次
+        batch_images, batch_points, batch_timestamps = process_batch(
+            batch_paths, timestamps[start_idx:end_idx], ref_pts_target, args
+        )
+        
+        # 保存当前批次的结果
+        all_aligned_images.extend(batch_images)
+        all_aligned_points.extend(batch_points)
+        all_aligned_timestamps.extend(batch_timestamps)
+        
+        # 释放当前批次的内存
+        del batch_images
+        del batch_points
+        gc.collect()
+        
+        print(f"批次 {batch_idx + 1} 处理完成，当前内存使用: {get_memory_usage():.1f} MB")
+    
+    # 生成最终效果
+    print("\n生成最终效果...")
     if args.morph == "flow":
-        frames = list(
-            generate_flow_morph_frames(
-                aligned_images,
-                aligned_points,
-                fps=args.video_fps,
-                transition_seconds=args.transition_seconds,
-                hold_seconds=args.hold_seconds,
-                timestamps=aligned_timestamps,
-                flow_strength=args.flow_strength,
-                face_protect=args.face_protect,
-                sharpen_amount=args.sharpen,
-                easing=("compressed_mid" if args.easing != "linear" else "linear"),
-                ease_a=args.ease_a,
-                ease_b=args.ease_b,
-                ease_p1=args.ease_p1,
-                ease_p3=args.ease_p3,
-                use_gpu=args.use_gpu,
-            )
+        frames = generate_flow_morph_frames(
+            all_aligned_images, all_aligned_points, args.video_fps, 
+            args.transition_seconds, args.hold_seconds, timestamps=all_aligned_timestamps,
+            flow_strength=args.flow_strength, face_protect=args.face_protect,
+            sharpen_amount=args.sharpen, easing=args.easing,
+            ease_a=args.ease_a, ease_b=args.ease_b, ease_p1=args.ease_p1,
+            ease_p3=args.ease_p3, use_gpu=args.use_gpu
         )
     else:
-        frames = list(
-            generate_crossfade_frames(
-                aligned_images,
-                fps=args.video_fps,
-                transition_seconds=args.transition_seconds,
-                hold_seconds=args.hold_seconds,
-                timestamps=aligned_timestamps,
-                easing=("compressed_mid" if args.easing != "linear" else "linear"),
-                ease_a=args.ease_a,
-                ease_b=args.ease_b,
-                ease_p1=args.ease_p1,
-                ease_p3=args.ease_p3,
-            )
+        frames = generate_crossfade_frames(
+            all_aligned_images, args.video_fps, args.transition_seconds, 
+            args.hold_seconds, timestamps=all_aligned_timestamps,
+            easing=args.easing, ease_a=args.ease_a, ease_b=args.ease_b,
+            ease_p1=args.ease_p1, ease_p3=args.ease_p3
         )
+    
+    # 保存结果
+    save_results(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
 
-    ensure_dir(args.output_dir)
-    gif_path = os.path.join(args.output_dir, "morph.gif")
-    mp4_path = os.path.join(args.output_dir, "morph.mp4")
 
-    print("保存 GIF...")
-    save_gif(frames, gif_path, fps=args.gif_fps)
-    print("保存 MP4...")
-    save_mp4(frames, mp4_path, fps=args.video_fps)
+def select_reference_from_batches(image_paths: List[str], detector, manual_ref_idx: Optional[int], batch_size: int) -> int:
+    """从分批处理的图像中选择参考图"""
+    print("从分批图像中选择最佳参考图...")
+    
+    all_face_points = []
+    all_qualities = []
+    
+    total_batches = (len(image_paths) + batch_size - 1) // batch_size
+    
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(image_paths))
+        batch_paths = image_paths[start_idx:end_idx]
+        
+        print(f"  分析批次 {batch_idx + 1}/{total_batches} 中的图像质量...")
+        
+        # 检测当前批次
+        batch_images = load_images(batch_paths)
+        batch_detections = []
+        for img in tqdm(batch_images, desc=f"批次 {batch_idx + 1} 检测"):
+            batch_detections.append(detector.detect(img))
+        
+        # 计算质量评分
+        for i, detection in enumerate(batch_detections):
+            if detection.face_points is not None and len(detection.face_points) >= 300:
+                from align import _compute_face_quality_score
+                quality = _compute_face_quality_score(detection.face_points)
+                all_face_points.append(detection.face_points)
+                all_qualities.append((start_idx + i, quality))
+        
+        # 释放当前批次内存
+        del batch_images
+        del batch_detections
+        gc.collect()
+    
+    if not all_qualities:
+        raise SystemExit("未检测到任何有效的人脸关键点")
+    
+    # 选择参考图
+    if manual_ref_idx is not None:
+        if manual_ref_idx >= len(image_paths):
+            raise SystemExit(f"指定的参考图索引 {manual_ref_idx} 超出范围")
+        ref_idx = manual_ref_idx
+        print(f"使用手动指定的参考图索引: {ref_idx}")
+    else:
+        # 自动选择质量最高的图像
+        best_idx, best_quality = max(all_qualities, key=lambda x: x[1])
+        ref_idx = best_idx
+        print(f"自动选择质量最高的图像作为参考图: {ref_idx} (质量: {best_quality:.3f})")
+    
+    return ref_idx
 
-    if args.save_aligned:
-        aligned_dir = os.path.join(args.output_dir, "aligned")
-        ensure_dir(aligned_dir)
-        for idx, im in enumerate(aligned_images):
-            cv2.imwrite(os.path.join(aligned_dir, f"aligned_{idx:03d}.png"), im)
 
-    print(f"完成。GIF: {gif_path}  MP4: {mp4_path}")
+def process_batch(batch_paths: List[str], batch_timestamps: List[Optional[dt.datetime]], 
+                 ref_pts_target: np.ndarray, args) -> Tuple[List[np.ndarray], List[np.ndarray], List[Optional[dt.datetime]]]:
+    """处理单个批次的图像"""
+    # 加载当前批次图像
+    batch_images = load_images(batch_paths)
+    
+    # 检测人脸关键点
+    detector = LandmarkDetector()
+    batch_detections = []
+    for img in tqdm(batch_images, desc="检测人脸关键点"):
+        batch_detections.append(detector.detect(img))
+    detector.close()
+    
+    batch_face_points = [d.face_points for d in batch_detections]
+    
+    # 对齐图像
+    aligned_images = []
+    aligned_points = []
+    aligned_timestamps = []
+    
+    for i, (img, pts) in enumerate(zip(batch_images, batch_face_points)):
+        if pts is not None and len(pts) >= 300:
+            try:
+                # 对齐到参考图
+                result = warp_with_similarity(img, pts, ref_pts_target, (args.height, args.width))
+                if result is not None:
+                    aligned_img, aligned_pts = result
+                    aligned_images.append(aligned_img)
+                    aligned_points.append(aligned_pts)
+                    aligned_timestamps.append(batch_timestamps[i])
+            except Exception as e:
+                print(f"警告：图像 {batch_paths[i]} 对齐失败: {e}")
+                continue
+    
+    return aligned_images, aligned_points, aligned_timestamps
+
+
+def process_alignment_and_morphing(images: List[np.ndarray], face_points_list: List[Optional[np.ndarray]], 
+                                 ref_pts_target: np.ndarray, M_ref_total: np.ndarray,
+                                 ref_img_warped: Optional[np.ndarray], ref_idx: int,
+                                 timestamps: List[Optional[dt.datetime]], args) -> None:
+    """处理图像对齐和变形"""
+    # 对齐图像
+    aligned_by_index: List[Optional[np.ndarray]] = [None] * len(images)
+    aligned_points_by_index: List[Optional[np.ndarray]] = [None] * len(images)
+    aligned_timestamps: List[Optional[dt.datetime]] = []
+    
+    print("对齐图像到参考图...")
+    for i, (img, pts) in enumerate(tqdm(zip(images, face_points_list), total=len(images))):
+        if pts is not None and len(pts) >= 300:
+            try:
+                # 对齐到参考图
+                result = warp_with_similarity(img, pts, ref_pts_target, (args.height, args.width))
+                if result is not None:
+                    aligned_img, aligned_pts = result
+                    aligned_by_index[i] = aligned_img
+                    aligned_points_by_index[i] = aligned_pts
+                    aligned_timestamps.append(timestamps[i])
+            except Exception as e:
+                print(f"警告：图像 {i} 对齐失败: {e}")
+                continue
+    
+    # 过滤掉None值
+    aligned_images = [img for img in aligned_by_index if img is not None]
+    aligned_points = [pts for pts in aligned_points_by_index if pts is not None]
+    
+    if len(aligned_images) < 2:
+        raise SystemExit("对齐后有效图像数量不足，无法生成效果")
+    
+    print(f"成功对齐 {len(aligned_images)} 张图像")
+    
+    # 生成变形效果
+    print("生成变形效果...")
+    if args.morph == "flow":
+        frames = generate_flow_morph_frames(
+            aligned_images, aligned_points, args.video_fps, 
+            args.transition_seconds, args.hold_seconds, timestamps=aligned_timestamps,
+            flow_strength=args.flow_strength, face_protect=args.face_protect,
+            sharpen_amount=args.sharpen, easing=args.easing,
+            ease_a=args.ease_a, ease_b=args.ease_b, ease_p1=args.ease_p1,
+            ease_p3=args.ease_p3, use_gpu=args.use_gpu
+        )
+    else:
+        frames = generate_crossfade_frames(
+            aligned_images, args.video_fps, args.transition_seconds, 
+            args.hold_seconds, timestamps=aligned_timestamps,
+            easing=args.easing, ease_a=args.ease_a, ease_b=args.ease_b,
+            ease_p1=args.ease_p1, ease_p3=args.ease_p3
+        )
+    
+    # 保存结果
+    save_results(frames, args.output_dir, args.gif_fps, args.video_fps, args.generate_gif)
+
+
+def save_results(frames: List[np.ndarray], output_dir: str, gif_fps: int, video_fps: int, generate_gif: bool = True) -> None:
+    """保存结果文件"""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 保存GIF（可选）
+    if generate_gif:
+        gif_path = os.path.join(output_dir, "morph.gif")
+        print(f"保存GIF: {gif_path}")
+        save_gif(frames, gif_path, gif_fps)
+    
+    # 保存MP4
+    mp4_path = os.path.join(output_dir, "morph.mp4")
+    print(f"保存MP4: {mp4_path}")
+    save_mp4(frames, mp4_path, video_fps)
+    
+    print("处理完成！")
+
+
+def main() -> None:
+    args = parse_args()
+
+    image_paths = list_images_sorted(args.input_dir, sort=args.sort)
+    if len(image_paths) < 2:
+        raise SystemExit("至少需要两张图片")
+
+    print(f"读取 {len(image_paths)} 张图片，排序方式: {args.sort}")
+    
+    # 内存优化：检查图像数量，如果过多则分批处理
+    max_images_per_batch = args.batch_size
+    if len(image_paths) > max_images_per_batch:
+        print(f"警告：图像数量较多({len(image_paths)}张)，将分批处理以避免内存不足")
+        print(f"每批处理 {max_images_per_batch} 张图片")
+        
+        # 分批处理
+        process_images_in_batches(image_paths, args, max_images_per_batch)
+        return
+    
+    # 正常处理（图像数量较少时）
+    process_images_normal(image_paths, args)
 
 
 if __name__ == "__main__":

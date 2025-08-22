@@ -10,3 +10,4 @@ flask>=3.0.0
 pyinstaller>=6.6.0
 gunicorn>=23.0.0
 waitress>=3.0.2
+psutil>=5.9.0

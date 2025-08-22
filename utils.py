@@ -1,7 +1,7 @@
 import os
 import datetime as dt
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -169,39 +169,167 @@ def compute_interocular_distance(face_points: np.ndarray) -> Optional[float]:
 
 
 def compute_roll_degrees(face_points: np.ndarray) -> float:
-    """计算人脸旋转角度，基于眼睛关键点"""
+    """计算人脸旋转角度，基于眼睛、鼻子、嘴巴、下颌等关键面部特征点"""
     if face_points is None or len(face_points) < 468:
         return 0.0
     
-    # 只使用最基本的眼睛关键点：33(右眼) 和 263(左眼)
-    # 这是MediaPipe FaceMesh的标准索引
-    right_eye_idx = 33
-    left_eye_idx = 263
+    # 定义关键面部特征点索引（MediaPipe FaceMesh）
+    # 眼睛关键点
+    eye_points = {
+        'right_outer': 33,   # 右眼外角
+        'right_inner': 133,  # 右眼内角
+        'left_inner': 362,   # 左眼内角
+        'left_outer': 263,   # 左眼外角
+    }
     
-    if right_eye_idx >= len(face_points) or left_eye_idx >= len(face_points):
+    # 鼻子关键点
+    nose_points = {
+        'tip': 1,        # 鼻尖
+        'bridge': 168,   # 鼻梁
+        'left': 129,     # 左鼻翼
+        'right': 358,    # 右鼻翼
+    }
+    
+    # 嘴巴关键点
+    mouth_points = {
+        'left': 61,      # 左嘴角
+        'right': 291,    # 右嘴角
+        'top': 13,       # 上唇中心
+        'bottom': 14,    # 下唇中心
+    }
+    
+    # 下颌关键点
+    jaw_points = {
+        'chin': 199,     # 下巴中心
+        'left': 132,     # 左下颌
+        'right': 361,    # 右下颌
+    }
+    
+    angles = []
+    
+    # 方法1：眼睛连线角度（最重要）
+    if all(idx < len(face_points) for idx in eye_points.values()):
+        # 使用外眼角连线
+        right_outer = face_points[eye_points['right_outer']]
+        left_outer = face_points[eye_points['left_outer']]
+        dy = float(left_outer[1] - right_outer[1])
+        dx = float(left_outer[0] - right_outer[0])
+        if abs(dx) > 1e-6:
+            angle_rad = np.arctan2(dy, dx)
+            angle_deg = float(np.degrees(angle_rad))
+            normalized_angle = normalize_angle(angle_deg)
+            angles.append(normalized_angle)
+        
+        # 使用内眼角连线
+        right_inner = face_points[eye_points['right_inner']]
+        left_inner = face_points[eye_points['left_inner']]
+        dy = float(left_inner[1] - right_inner[1])
+        dx = float(left_inner[0] - right_inner[0])
+        if abs(dx) > 1e-6:
+            angle_rad = np.arctan2(dy, dx)
+            angle_deg = float(np.degrees(angle_rad))
+            normalized_angle = normalize_angle(angle_deg)
+            angles.append(normalized_angle)
+    
+    # 方法2：鼻子水平线角度
+    if all(idx < len(face_points) for idx in [nose_points['left'], nose_points['right']]):
+        nose_left = face_points[nose_points['left']]
+        nose_right = face_points[nose_points['right']]
+        dy = float(nose_left[1] - nose_right[1])
+        dx = float(nose_left[0] - nose_right[0])
+        if abs(dx) > 1e-6:
+            angle_rad = np.arctan2(dy, dx)
+            angle_deg = float(np.degrees(angle_rad))
+            normalized_angle = normalize_angle(angle_deg)
+            angles.append(normalized_angle)
+    
+    # 方法3：嘴巴连线角度
+    if all(idx < len(face_points) for idx in [mouth_points['left'], mouth_points['right']]):
+        mouth_left = face_points[mouth_points['left']]
+        mouth_right = face_points[mouth_points['right']]
+        dy = float(mouth_left[1] - mouth_right[1])
+        dx = float(mouth_left[0] - mouth_right[0])
+        if abs(dx) > 1e-6:
+            angle_rad = np.arctan2(dy, dx)
+            angle_deg = float(np.degrees(angle_rad))
+            normalized_angle = normalize_angle(angle_deg)
+            angles.append(normalized_angle)
+    
+    # 方法4：下颌连线角度
+    if all(idx < len(face_points) for idx in [jaw_points['left'], jaw_points['right']]):
+        jaw_left = face_points[jaw_points['left']]
+        jaw_right = face_points[jaw_points['right']]
+        dy = float(jaw_left[1] - jaw_right[1])
+        dx = float(jaw_left[0] - jaw_right[0])
+        if abs(dx) > 1e-6:
+            angle_rad = np.arctan2(dy, dx)
+            angle_deg = float(np.degrees(angle_rad))
+            normalized_angle = normalize_angle(angle_deg)
+            angles.append(normalized_angle)
+    
+    # 方法5：面部中心线角度（眼睛中心到下巴中心）
+    if (all(idx < len(face_points) for idx in [eye_points['right_outer'], eye_points['left_outer']]) and
+        jaw_points['chin'] < len(face_points)):
+        # 计算眼睛中心
+        right_eye = face_points[eye_points['right_outer']]
+        left_eye = face_points[eye_points['left_outer']]
+        eye_center = ((right_eye[0] + left_eye[0]) / 2.0, (right_eye[1] + left_eye[1]) / 2.0)
+        
+        # 下巴中心
+        chin = face_points[jaw_points['chin']]
+        
+        # 计算面部中心线角度
+        dy = float(chin[1] - eye_center[1])
+        dx = float(chin[0] - eye_center[0])
+        if abs(dx) > 1e-6:
+            angle_rad = np.arctan2(dy, dx)
+            # 面部中心线应该是垂直的，所以角度应该是90度
+            # 我们计算的是相对于水平线的角度，所以需要调整
+            face_angle = float(np.degrees(angle_rad)) - 90.0
+            normalized_face_angle = normalize_angle(face_angle)
+            angles.append(normalized_face_angle)
+    
+    if not angles:
+        # 回退到原来的方法
+        if 33 < len(face_points) and 263 < len(face_points):
+            right_eye = face_points[33]
+            left_eye = face_points[263]
+            dy = float(left_eye[1] - right_eye[1])
+            dx = float(left_eye[0] - right_eye[0])
+            if abs(dx) < 1e-6:
+                return 0.0
+            angle_rad = np.arctan2(dy, dx)
+            angle_deg = float(np.degrees(angle_rad))
+            normalized_angle = normalize_angle(angle_deg)
+            return normalized_angle
         return 0.0
     
-    right_eye = face_points[right_eye_idx]
-    left_eye = face_points[left_eye_idx]
-    
-    # 计算眼睛连线与水平线的夹角
-    dy = float(left_eye[1] - right_eye[1])  # 左眼y - 右眼y
-    dx = float(left_eye[0] - right_eye[0])  # 左眼x - 右眼x
-    
-    # 如果dx太小，说明眼睛几乎垂直，无法计算角度
-    if abs(dx) < 1e-6:
-        return 0.0
-    
-    # 计算角度
-    angle_rad = np.arctan2(dy, dx)
-    angle_deg = float(np.degrees(angle_rad))
+    # 使用加权中位数，眼睛权重最高
+    if len(angles) >= 3:
+        # 前两个角度是眼睛的，权重更高
+        eye_angles = angles[:2] if len(angles) >= 2 else angles
+        other_angles = angles[2:] if len(angles) >= 3 else []
+        
+        # 计算眼睛角度的中位数
+        eye_median = float(np.median(eye_angles))
+        
+        # 如果有其他角度，进行加权平均
+        if other_angles:
+            other_median = float(np.median(other_angles))
+            # 眼睛权重0.7，其他特征权重0.3
+            final_angle = eye_median * 0.7 + other_median * 0.3
+        else:
+            final_angle = eye_median
+    else:
+        # 角度数量不足，使用简单中位数
+        final_angle = float(np.median(angles))
     
     # 角度合理性检查
-    if abs(angle_deg) > 45.0:
-        print(f"警告：计算出的旋转角度过大 ({angle_deg:.2f}°)，可能检测有误，使用0°")
+    if abs(final_angle) > 30.0:  # 降低阈值，更严格
+        print(f"警告：计算出的旋转角度过大 ({final_angle:.2f}°)，可能检测有误，使用0°")
         return 0.0
     
-    return angle_deg
+    return final_angle
 
 
 def apply_affine_to_points(points: np.ndarray, M: np.ndarray) -> np.ndarray:
@@ -229,3 +357,33 @@ def make_canvas_boundary_points(width: int, height: int) -> np.ndarray:
         (3 * w // 4, h - 1), (w // 4, h - 1), (0, 3 * h // 4), (0, h // 4),
     ]
     return np.array(pts, dtype=np.float32)
+
+
+def normalize_angle(angle_deg: float) -> float:
+    """标准化角度到 -90° 到 90° 范围
+    
+    Args:
+        angle_deg: 输入角度（度）
+    
+    Returns:
+        标准化后的角度（度）
+    
+    说明：
+    - 对于水平线，0° 和 180° 表示相同方向，标准化为 0°
+    - 对于垂直线，90° 和 -90° 表示相同方向，标准化为 90°
+    - 角度范围标准化到 -90° 到 90°
+    """
+    # 将角度标准化到 -180° 到 180° 范围
+    angle_deg = angle_deg % 360
+    if angle_deg > 180:
+        angle_deg -= 360
+    elif angle_deg < -180:
+        angle_deg += 360
+    
+    # 将角度标准化到 -90° 到 90° 范围
+    if angle_deg > 90:
+        angle_deg = 180 - angle_deg
+    elif angle_deg < -90:
+        angle_deg = -180 - angle_deg
+    
+    return angle_deg

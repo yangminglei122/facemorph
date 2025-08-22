@@ -285,10 +285,8 @@ def build_similarity_reference(face_pts_ref: np.ndarray, canvas_size: Tuple[int,
         eye_center = ((pr[0] + pl[0]) / 2.0, (pr[1] + pl[1]) / 2.0)
         
         # 应用旋转
-        M_rot = cv2.getRotationMatrix2D(eye_center, angle=-angle, scale=1.0)
-        ref_pts_rot = apply_affine_to_points(face_pts_ref, M_rot)
-        
-        print(f"  旋转完成，开始后续处理...")
+        M_rot = cv2.getRotationMatrix2D(eye_center, angle=angle, scale=1.0)
+    ref_pts_rot = apply_affine_to_points(face_pts_ref, M_rot)
 
     # 改进的居中算法：使用眼部中心对齐到画布中心
     pr_rot = ref_pts_rot[EYER_OUTER]
@@ -341,7 +339,11 @@ def _verify_alignment_quality(aligned_points: np.ndarray) -> float:
         if abs(dx) < 1e-6:
             return 0.0
         angle_rad = np.arctan2(dy, dx)
-        return float(np.degrees(angle_rad))
+        angle_deg = float(np.degrees(angle_rad))
+        # 使用标准化角度，确保角度在合理范围内
+        from utils import normalize_angle
+        normalized_angle = normalize_angle(angle_deg)
+        return normalized_angle
     except Exception:
         return 0.0
 
