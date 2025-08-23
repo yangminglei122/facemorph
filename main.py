@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from utils import list_images_sorted, ensure_dir, read_exif_datetime, parse_date_from_filename, get_file_mtime_dt
+from utils import list_images_sorted, ensure_dir, read_exif_datetime, parse_date_from_filename, get_file_mtime_dt, extract_timestamps, load_images, get_memory_usage, process_batch
 from detect import LandmarkDetector
 from align import select_reference_index, build_similarity_reference, warp_with_similarity, process_external_reference_image
 from morph import generate_crossfade_frames, generate_flow_morph_frames
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sort", default="name", choices=["name", "exif", "filename_date", "name_numeric"], help="排序方式(name/time/exif/filename_date/name_numeric)")
     p.add_argument("--width", type=int, default=1080, help="输出宽度")
     p.add_argument("--height", type=int, default=1350, help="输出高度")
-    p.add_argument("--subject_scale", type=float, default=0.55, help="主体缩放系数(<1保留更多背景，=1不缩放)")
+    p.add_argument("--subject_scale", type=float, default=0.75, help="主体缩放系数(<1保留更多背景，=1不缩放)")
     p.add_argument("--transition_seconds", type=float, default=0.4, help="相邻两张渐变时长")
     p.add_argument("--hold_seconds", type=float, default=0.7, help="每张保持时长")
     p.add_argument("--gif_fps", type=int, default=15, help="GIF 帧率")
@@ -46,18 +46,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_images(paths: List[str]) -> List[np.ndarray]:
-    """加载多张图像到内存"""
-    images = []
-    for p in paths:
-        img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if img is None:
-            img = cv2.imread(p, cv2.IMREAD_COLOR)
-        if img is None:
-            raise RuntimeError(f"无法读取图像: {p}")
-        images.append(img)
-    return images
-
 
 def load_single_image(image_path: str) -> np.ndarray:
     """加载单张图像"""
@@ -69,31 +57,6 @@ def load_single_image(image_path: str) -> np.ndarray:
     return img
 
 
-def get_memory_usage() -> float:
-    """获取当前内存使用量（MB）"""
-    try:
-        import psutil
-        process = psutil.Process()
-        memory_info = process.memory_info()
-        return memory_info.rss / 1024 / 1024  # 转换为MB
-    except ImportError:
-        return 0.0
-
-
-def extract_timestamps(paths: List[str], sort: str) -> List[Optional[dt.datetime]]:
-    """从图片路径中提取时间戳信息"""
-    timestamps = []
-    for path in paths:
-        # 优先使用EXIF时间
-        timestamp = read_exif_datetime(path)
-        if timestamp is None:
-            # 尝试从文件名解析时间
-            timestamp = parse_date_from_filename(path)
-        if timestamp is None:
-            # 使用文件修改时间
-            timestamp = get_file_mtime_dt(path)
-        timestamps.append(timestamp)
-    return timestamps
 
 
 def _debug_angle_calculation(pts: np.ndarray) -> None:
@@ -487,47 +450,6 @@ def select_reference_from_batches(image_paths: List[str], detector, manual_ref_i
     
     return ref_idx
 
-
-def process_batch(batch_paths: List[str], batch_timestamps: List[Optional[dt.datetime]], 
-                 ref_pts_target: np.ndarray, args) -> Tuple[List[np.ndarray], List[np.ndarray], List[Optional[dt.datetime]]]:
-    """处理单个批次的图像"""
-    # 加载当前批次图像
-    batch_images = load_images(batch_paths)
-    
-    # 检测人脸关键点
-    detector = LandmarkDetector()
-    batch_detections = []
-    for img in tqdm(batch_images, desc="检测人脸关键点"):
-        batch_detections.append(detector.detect(img))
-    detector.close()
-    
-    batch_face_points = [d.face_points for d in batch_detections]
-    
-    # 对齐图像
-    aligned_images = []
-    aligned_points = []
-    aligned_timestamps = []
-    
-    for i, (img, pts) in enumerate(zip(batch_images, batch_face_points)):
-        if pts is not None and len(pts) >= 300:
-            try:
-                # 对齐到参考图
-                result = warp_with_similarity(img, pts, ref_pts_target, (args.height, args.width))
-                if result is not None:
-                    aligned_img, aligned_pts = result
-                    aligned_images.append(aligned_img)
-                    aligned_points.append(aligned_pts)
-                    aligned_timestamps.append(batch_timestamps[i])
-            except Exception as e:
-                print(f"警告：图像 {batch_paths[i]} 对齐失败: {e}")
-                continue
-        else:
-            # 人脸检测或关键点检测失败
-            filename = os.path.basename(batch_paths[i])
-            print(f"警告：图像 {batch_paths[i]} 人脸检测或关键点检测失败，文件: {filename}")
-            continue
-    
-    return aligned_images, aligned_points, aligned_timestamps
 
 
 def process_alignment_and_morphing(images: List[np.ndarray], face_points_list: List[Optional[np.ndarray]], 

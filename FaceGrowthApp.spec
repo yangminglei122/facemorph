@@ -1,56 +1,72 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_data_files, collect_all
 
-# 包含项目根目录下的必要文件
+block_cipher = None
+
+# 收集mediapipe中必要的数据文件
+mediapipe_datas = []
+mediapipe_datas += collect_data_files('mediapipe', include_py_files=False, subdir='modules/face_landmark')
+mediapipe_datas += collect_data_files('mediapipe', include_py_files=False, subdir='modules/face_detection')
+mediapipe_datas += collect_data_files('mediapipe', include_py_files=False, subdir='modules/pose_detection')
+mediapipe_datas += collect_data_files('mediapipe', include_py_files=False, subdir='modules/pose_landmark')
+mediapipe_datas += collect_data_files('mediapipe', include_py_files=False, subdir='models', includes=['*.tflite', '*.pb', '*.txt'])
+
+# 统一版本的文件包含列表
 datas = [
-    ('src', 'src'),
     ('utils.py', '.'),
     ('detect.py', '.'),
     ('align.py', '.'),
     ('morph.py', '.'),
     ('exporter.py', '.'),
-    ('scripts/logging_hook.py', 'scripts'),  # 添加日志hook脚本
-]
+    ('main.py', '.'),
+    ('app_entry.py', '.'),
+    ('src', 'src'),
+    ('scripts/logging_hook.py', 'scripts'),
+    ('ref', 'ref'),
+] + mediapipe_datas
 
-binaries = []
 hiddenimports = [
-    'flask',
-    'imageio',
-    'imageio_ffmpeg',
     'cv2',
     'numpy',
     'PIL',
     'mediapipe',
-    'scipy',
-    'tqdm'
+    'imageio',
+    'imageio_ffmpeg',
+    'tqdm',
+    'flask',
+    'src.pipeline',
+    'src.webapp',
+    'utils',
+    'detect',
+    'align',
+    'morph',
+    'exporter',
+    'scripts.logging_hook',
 ]
-datas += collect_data_files('imageio_ffmpeg')
-datas += collect_data_files('imageio')
-tmp_ret = collect_all('mediapipe')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
 
 a = Analysis(
-    ['src/__main__.py'],
+    ['app_entry.py'],
     pathex=[],
-    binaries=binaries,
+    binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['scripts/logging_hook.py'],  # 添加runtime hook
+    runtime_hooks=['scripts/logging_hook.py'],
     excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
-    optimize=0,
 )
 
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
+    a.zipfiles,
     a.datas,
     [],
     name='FaceGrowthApp',
@@ -60,7 +76,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -46,10 +46,10 @@ python main.py --input_dir ./images --output_dir ./output --sort name
 
 - **人脸关键点检测**：使用 MediaPipe 精准检测人脸关键点
 - **智能参考图选择**：
-  - 自动选择最正面的图像作为参考图
-  - 支持手动指定参考图索引
-  - 支持外部参考图像（不参与最终效果生成）
-  - 质量评分系统，确保选择最佳参考图
+  - 自动选择：基于质量评分选择最正面的图像
+  - 手动指定：用户指定参考图索引
+  - 外部参考：使用外部图像作为对齐参考
+  - 质量评分：确保选择最佳参考图
 - **精确人脸对齐**：
   - 基于眼部中心的精确对齐算法
   - 改进的旋转、平移和缩放算法
@@ -61,6 +61,7 @@ python main.py --input_dir ./images --output_dir ./output --sort name
 - **灵活的输出格式**：支持导出 GIF 和 MP4 视频
 - **GPU 加速**：支持 CUDA 加速光流计算（可选）
 - **Web 界面**：提供友好的 Web 界面，支持文件上传和进度显示
+- **流式保存**：支持流式保存以减少内存使用
 - **多平台支持**：支持 Linux/macOS/Windows
 
 ## 技术架构概览
@@ -98,102 +99,7 @@ facemorph/
 
 ## 安装和依赖说明
 
-### 环境要求
 
-- Python 3.9+（建议 3.10）
-- Linux/macOS/Windows（开发在 Linux 验证）
-
-### 安装步骤
-
-1. 创建虚拟环境（推荐）：
-```bash
-conda create -n facemorph python=3.10 -y
-conda activate facemorph
-```
-
-2. 安装依赖：
-```bash
-pip install -r requirements.txt
-```
-
-### 依赖库说明
-
-- `mediapipe`：人脸关键点检测
-- `opencv-python`：图像处理和光流计算
-- `numpy`：数值计算
-- `Pillow`：图像格式支持
-- `imageio`：GIF 导出
-- `imageio-ffmpeg`：MP4 导出
-- `flask`：Web 界面
-- `pyinstaller`：打包工具
-- `gunicorn`：生产环境 Web 服务器
-- `psutil`：内存监控
-
-## 使用方式
-
-### 命令行模式
-
-```bash
-python main.py \
-  --input_dir /path/to/photos \
-  --output_dir /path/to/output \
-  --sort name \
-  --width 1080 --height 1350 \
-  --transition_seconds 0.4 \
-  --hold_seconds 0.7 \
-  --gif_fps 15 \
-  --video_fps 30
-
-# 基本使用
-python main.py --input_dir ./images --output_dir ./output --sort name --gif_fps 15 --video_fps 30
-
-# 手动指定参考图---手动指定的参考图如果不合适，可能会导致效果图角度倾斜等问题。
-python main.py --input_dir ./images --output_dir ./output --ref_index 2 --gif_fps 15 --video_fps 30
-
-# 使用外部参考图---手动指定的参考图如果不合适，可能会导致效果图角度倾斜等问题。
-python main.py --input_dir ./images --output_dir ./output --ref_image ./ref/ref_image.jpg --gif_fps 15 --video_fps 30
-
-# 内存优化：处理大量图像时使用分批处理
-python main.py --input_dir ./images --output_dir ./output --batch_size 30 --gif_fps 15 --video_fps 30
-
-```
-
-#### 命令行参数说明
-
-- `--input_dir`：输入图片文件夹路径
-- `--output_dir`：输出文件夹路径
-- `--sort`：排序方式（`name`/`exif`/`filename_date`/`name_numeric`）
-- `--width`/`--height`：输出图像尺寸
-- `--subject_scale`：主体缩放系数（<1 保留更多背景）
-- `--transition_seconds`：相邻图片间的渐变时长
-- `--hold_seconds`：每张图片的保持时长
-- `--gif_fps`/`--video_fps`：GIF 和视频的帧率
-- `--morph`：渐变方式（`crossfade` 或 `flow`）
-- `--flow_strength`：光流形变强度（0.5-1.5）
-- `--face_protect`：面部保护权重（0-1）
-- `--sharpen`：输出锐化强度（0-0.5）
-- `--easing`：渐变权重曲线（`linear` 或 `compressed_mid`）
-- `--use_gpu`：启用 GPU 加速（需要 CUDA 支持）
-- `--ref_index`：手动指定参考图索引（0-based，留空自动选择）
-- `--ref_image`：外部参考图像路径（不参与最终效果生成）
-- `--batch_size`：分批处理时的批次大小（默认50，图像数量超过此值时自动分批）
-- `--generate_gif`：是否生成GIF文件（默认生成）
-- `--streaming_save`：是否使用流式保存以减少内存使用（处理大量图像时推荐使用）
-
-### Web 界面模式（推荐）
-
-启动 Web 服务：
-```bash
-python -m src
-python -m src >  ./logs/output.log 2>&1 
-# 或生产模式：
-# -linux
-gunicorn -w 2 -b 0.0.0.0:5000 'src.webapp:app'
-# -windows
-python -m waitress --host=0.0.0.0 --port=5000 src.webapp:app
-```
-
-在浏览器中打开：`http://127.0.0.1:5000`
 
 #### Web 界面功能
 
@@ -206,6 +112,7 @@ python -m waitress --host=0.0.0.0 --port=5000 src.webapp:app
   - 上传指定参考图：上传一张外部图像作为参考图（不参与最终效果生成）
 - 实时显示处理进度和预计剩余时间
 - 结果预览和下载（GIF/MP4/ZIP）
+- 支持流式保存选项，减少内存使用
 
 ## 示例和输出说明
 
@@ -262,10 +169,12 @@ output/
 
 ### 流式保存功能
 
-为了解决处理大量图像时内存逐渐增大的问题，程序新增了流式保存功能：
+为了解决处理大量图像时内存逐渐增大的问题，程序支持流式保存功能：
 
 - **传统保存**：生成所有帧后一次性保存到文件，内存占用随帧数线性增长
 - **流式保存**：逐帧生成并保存，内存占用保持稳定
+
+流式保存功能可在Web界面和命令行界面中使用，通过勾选"流式保存(减少内存)"选项或使用 `--streaming_save` 参数启用。
 
 #### 流式保存优势
 
@@ -286,7 +195,7 @@ python main.py --input_dir ./images --output_dir ./output --batch_size 20
 python main.py --input_dir ./images --output_dir ./output --batch_size 10 --streaming_save
 
 # 只生成MP4文件时（内存优化效果最佳）
-python main.py --input_dir ./images --output_dir ./output --streaming_save --generate_gif False
+python main.py --input_dir ./images --output_dir ./output --streaming_save --generate_gif 
 ```
 
 ### 性能优化建议
@@ -345,7 +254,7 @@ frame = image1 * (1 - α) + image2 * α
 
 程序自动在关键帧上添加时间戳字幕：
 
-1. **时间提取**：优先使用EXIF时间，其次文件名时间，最后文件修改时间
+1. **时间提取**：优先使用文件名时间，其次EXIF时间，最后文件修改时间
 2. **字幕位置**：显示在右下角，带半透明背景
 3. **格式**：YYYY-MM-DD 格式，避免中文乱码
 4. **显示逻辑**：在停留期间显示当前时间戳，在过渡期间显示起始时间戳
@@ -403,7 +312,7 @@ pyinstaller FaceGrowthApp.spec
 
 打包配置说明：
 - 使用 `FaceGrowthApp.spec` 配置文件进行打包，确保所有依赖正确包含
-- 入口文件为 `src/__main__.py`
+- 入口文件为 `app_entry.py`
 - 包含必要的数据文件：`src` 目录和核心模块文件
 - 隐藏导入多个模块：`flask`, `imageio`, `imageio_ffmpeg`, `cv2`, `numpy`, `PIL`, `mediapipe`, `scipy`, `tqdm`
 - 自动收集 `mediapipe` 和 `imageio_ffmpeg` 的所有依赖文件
@@ -483,6 +392,99 @@ dist/
    - 检查UPX压缩对性能的影响
 
 通过以上测试，可以确保打包后的应用在各种环境下都能正常运行。
+
+## 打包后使用说明
+
+### 获取可执行文件
+
+从发布页面下载适用于您系统的可执行文件，或使用以下命令自行打包：
+```bash
+pyinstaller FaceGrowthApp.spec
+```
+
+### 基本使用
+
+1. **Web界面模式**：
+   ```bash
+   ./FaceGrowthApp --useweb
+   ```
+   然后在浏览器中访问 http://127.0.0.1:5000
+
+2. **命令行模式**：
+   ```bash
+   ./FaceGrowthApp --input_dir ./images --output_dir ./output
+   ```
+
+### 命令行模式详细参数
+
+#### 自定义尺寸和时间参数
+```bash
+./FaceGrowthApp --input_dir ./images --output_dir ./output \
+  --width 1080 --height 1350 \
+  --transition_seconds 0.4 --hold_seconds 0.7
+```
+
+#### 使用GPU加速
+```bash
+./FaceGrowthApp --input_dir ./images --output_dir ./output --use_gpu
+```
+
+#### 指定参考图
+```bash
+# 指定参考图序号（从0开始）
+./FaceGrowthApp --input_dir ./images --output_dir ./output --ref_index 0
+
+# 使用内置参考图
+./FaceGrowthApp --input_dir ./images --output_dir ./output --ref_image ./ref/ref_image.jpg
+
+# 使用外部参考图
+./FaceGrowthApp --input_dir ./images --output_dir ./output --ref_image /path/to/reference.jpg
+```
+
+#### 使用流式保存（处理大量图像时推荐）
+```bash
+./FaceGrowthApp --input_dir ./images --output_dir ./output --streaming_save
+```
+
+#### 同时生成GIF和MP4
+```bash
+./FaceGrowthApp --input_dir ./images --output_dir ./output --generate_gif
+```
+
+### 完整参数列表
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| --input_dir | 输入图片文件夹 | ./images |
+| --output_dir | 输出文件夹 | ./output |
+| --sort | 排序方式(name/exif/filename_date/name_numeric) | name |
+| --width | 输出宽度 | 1080 |
+| --height | 输出高度 | 1350 |
+| --subject_scale | 主体缩放系数(<1保留更多背景) | 0.55 |
+| --transition_seconds | 相邻两张渐变时长 | 0.4 |
+| --hold_seconds | 每张保持时长 | 0.7 |
+| --gif_fps | GIF帧率 | 15 |
+| --video_fps | 视频帧率 | 30 |
+| --morph | 渐变方式(crossfade/flow) | flow |
+| --flow_strength | 光流形变强度(0.5-1.5) | 0.9 |
+| --face_protect | 面部保护权重(0-1) | 0.7 |
+| --sharpen | 输出锐化强度(0-0.5) | 0.2 |
+| --easing | 渐变权重曲线(linear/compressed_mid) | compressed_mid |
+| --use_gpu | 使用GPU光流加速 | false |
+| --save_aligned | 保存对齐后的静态帧 | false |
+| --ref_index | 手动指定参考图索引 | 自动选择 |
+| --ref_image | 外部参考图像路径 | 无 |
+| --batch_size | 分批处理时的批次大小 | 50 |
+| --generate_gif | 是否生成GIF文件 | false |
+| --streaming_save | 流式保存以减少内存使用 | false |
+
+### 注意事项
+
+1. 输入图片格式支持常见的JPG、PNG等格式
+2. 推荐使用正面人脸照片以获得最佳效果
+3. 处理大量图片时建议使用流式保存和分批处理
+4. GPU加速需要CUDA支持的显卡
+5. 生成的文件保存在指定的输出目录中
 
 ## 故障排除
 

@@ -1,13 +1,14 @@
 import os
 import datetime as dt
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+import argparse
 
 import cv2
 import numpy as np
 from PIL import Image, ExifTags
 import re
-
+import gc
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -48,8 +49,8 @@ def parse_date_from_filename(name: str) -> Optional[dt.datetime]:
     stem, _ = os.path.splitext(base)
     s = stem
     patterns = [
-        r"(?P<y>20\d{2})(?P<m>0[1-9]|1[0-2])(?P<d>[0-2][0-9]|3[01])[_-]?(?P<H>[0-1][0-9]|2[0-3])?(?P<M>[0-5][0-9])?(?P<S>[0-5][0-9])?",
-        r"(?P<y>20\d{2})[-_.](?P<m>0[1-9]|1[0-2])[-_.](?P<d>[0-2][0-9]|3[01])(?:[ T](?P<H>[0-1][0-3]|2[0-3])[:_-]?(?P<M>[0-5][0-9])[:_-]?(?P<S>[0-5][0-9])?)?",
+        r"(?P<y>19\d{2}|20\d{2})(?P<m>0[1-9]|1[0-2])(?P<d>[0-2][0-9]|3[01])[_-]?(?P<H>[0-1][0-9]|2[0-3])?(?P<M>[0-5][0-9])?(?P<S>[0-5][0-9])?",
+        r"(?P<y>19\d{2}|20\d{2})[-_.](?P<m>0[1-9]|1[0-2])[-_.](?P<d>[0-2][0-9]|3[01])(?:[ T](?P<H>[0-1][0-3]|2[0-3])[:_-]?(?P<M>[0-5][0-9])[:_-]?(?P<S>[0-5][0-9])?)?",
     ]
     for pat in patterns:
         m = re.search(pat, s)
@@ -387,3 +388,105 @@ def normalize_angle(angle_deg: float) -> float:
         angle_deg = -180 - angle_deg
     
     return angle_deg
+
+def extract_timestamps(paths: List[str], sort: str) -> List[Optional[dt.datetime]]:
+    """从图片路径中提取时间戳信息"""
+    timestamps = []
+    for path in paths:
+        # 优先使用文件名时间
+        timestamp = parse_date_from_filename(path)
+        if timestamp is None:
+            # 尝试使用EXIF时间
+            timestamp = read_exif_datetime(path)
+        if timestamp is None:
+            # 使用文件修改时间
+            timestamp = get_file_mtime_dt(path)
+        timestamps.append(timestamp)
+    return timestamps
+
+
+def load_images(paths: List[str]) -> List[np.ndarray]:
+    """加载多张图像到内存"""
+    images = []
+    for p in paths:
+        img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            img = cv2.imread(p, cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError(f"无法读取图像: {p}")
+        images.append(img)
+    return images
+
+
+def get_memory_usage() -> float:
+    """获取当前内存使用量（MB）"""
+    try:
+        import psutil
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        return memory_info.rss / 1024 / 1024  # 转换为MB
+    except ImportError:
+        return 0.0
+
+
+def process_batch(batch_paths: List[str], batch_timestamps: List[Optional[dt.datetime]],
+                 ref_pts_target: np.ndarray, config: Union[Dict[str, Any], argparse.Namespace], start_idx: int = 0) -> Tuple[List[np.ndarray], List[np.ndarray], List[Optional[dt.datetime]]]:
+    """处理单个批次的图像"""
+    from align import warp_with_similarity
+    from detect import LandmarkDetector
+    
+    # 加载当前批次图像
+    batch_images = load_images(batch_paths)
+    
+    # 检测人脸关键点
+    detector = LandmarkDetector()
+    batch_detections = []
+    for img in batch_images:
+        batch_detections.append(detector.detect(img))
+    detector.close()
+    
+    batch_face_points = [d.face_points for d in batch_detections]
+    
+    # 对齐图像
+    aligned_images = []
+    aligned_points = []
+    aligned_timestamps = []
+    
+    # 处理config参数，支持字典和argparse.Namespace两种类型
+    if hasattr(config, 'get'):
+        # 字典类型
+        width = int(config.get("width", 1080))
+        height = int(config.get("height", 1350))
+    else:
+        # argparse.Namespace类型
+        width = int(getattr(config, "width", 1080))
+        height = int(getattr(config, "height", 1350))
+    
+    for i, (img, pts) in enumerate(zip(batch_images, batch_face_points)):
+        if pts is not None and len(pts) >= 300:
+            try:
+                # 对齐到参考图
+                result = warp_with_similarity(img, pts, ref_pts_target, (height, width))
+                if result is not None:
+                    aligned_img, aligned_pts = result
+                    aligned_images.append(aligned_img)
+                    aligned_points.append(aligned_pts)
+                    aligned_timestamps.append(batch_timestamps[i])
+            except Exception as e:
+                # 忽略对齐失败的图像
+                print(f"警告：图像 {i} 对齐失败: {e}")
+                continue
+        else:
+            # 人脸检测或关键点检测失败
+            filename = os.path.basename(batch_paths[i])
+            global_index = start_idx + i  # 计算全局索引
+            print(f"警告：图像 {global_index} 人脸检测或关键点检测失败，文件: {filename}")
+            continue
+    
+    # 释放当前批次的内存
+    del batch_images
+    del batch_detections
+    del batch_face_points
+    gc.collect()
+    
+    return aligned_images, aligned_points, aligned_timestamps

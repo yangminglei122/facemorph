@@ -101,15 +101,15 @@ def _add_timestamp_to_image(image: np.ndarray, timestamp: Optional[dt.datetime],
     h, w = image.shape[:2]
     
     # 设置字体
-    font = cv2.FONT_HERSHEY_SIMPLEX
+    font = cv2.FONT_HERSHEY_SCRIPT_SIMPLEX
     
     # 获取文本尺寸
     (text_width, text_height), baseline = cv2.getTextSize(date_str, font, font_scale, font_thickness)
     
-    # 计算字幕位置（右下角，留出边距）
-    margin = 20
-    text_x = w - text_width - margin
-    text_y = h - margin
+    # 计算字幕位置（左右居中，距离底部5%的高度）
+    text_x = (w - text_width) // 2  # 左右居中
+    bottom_margin = int(h * 0.05)   # 距离底部5%的高度
+    text_y = h - bottom_margin
     
     # 创建背景矩形
     bg_x1 = text_x - 10

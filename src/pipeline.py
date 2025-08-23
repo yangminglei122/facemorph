@@ -8,11 +8,11 @@ import gc
 # 修复导入路径问题，确保在PyInstaller打包环境中能正确导入
 try:
     # 尝试相对导入（开发环境）
-    from utils import list_images_sorted, ensure_dir, read_exif_datetime, parse_date_from_filename, get_file_mtime_dt
+    from utils import list_images_sorted, ensure_dir, read_exif_datetime, parse_date_from_filename, get_file_mtime_dt, extract_timestamps, load_images, get_memory_usage, process_batch
     from detect import LandmarkDetector
     from align import select_reference_index, build_similarity_reference, warp_with_similarity, process_external_reference_image
     from morph import generate_crossfade_frames, generate_flow_morph_frames
-    from exporter import save_gif, save_mp4, save_outputs_parallel
+    from exporter import save_gif, save_mp4, save_outputs_parallel, save_mp4_streaming
 except ImportError:
     # 在PyInstaller打包环境中，尝试从项目根目录导入
     import sys
@@ -22,7 +22,7 @@ except ImportError:
         root_dir = sys._MEIPASS
         if root_dir not in sys.path:
             sys.path.insert(0, root_dir)
-    from utils import list_images_sorted, ensure_dir, read_exif_datetime, parse_date_from_filename, get_file_mtime_dt
+    from utils import list_images_sorted, ensure_dir, read_exif_datetime, parse_date_from_filename, get_file_mtime_dt, extract_timestamps, load_images, get_memory_usage, process_batch
     from detect import LandmarkDetector
     from align import select_reference_index, build_similarity_reference, warp_with_similarity, process_external_reference_image
     from morph import generate_crossfade_frames, generate_flow_morph_frames
@@ -31,100 +31,8 @@ except ImportError:
 ProgressCallback = Callable[[float, str], None]
 
 
-def extract_timestamps(paths: List[str], sort: str) -> List[Optional[dt.datetime]]:
-    """从图片路径中提取时间戳信息"""
-    timestamps = []
-    for path in paths:
-        # 优先使用EXIF时间
-        timestamp = read_exif_datetime(path)
-        if timestamp is None:
-            # 尝试从文件名解析时间
-            timestamp = parse_date_from_filename(path)
-        if timestamp is None:
-            # 使用文件修改时间
-            timestamp = get_file_mtime_dt(path)
-        timestamps.append(timestamp)
-    return timestamps
 
 
-def _load_images(paths: List[str]) -> List[np.ndarray]:
-    """加载多张图像到内存"""
-    images = []
-    for p in paths:
-        img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if img is None:
-            img = cv2.imread(p, cv2.IMREAD_COLOR)
-        if img is None:
-            raise RuntimeError(f"无法读取图像: {p}")
-        images.append(img)
-    return images
-
-
-def _get_memory_usage() -> float:
-    """获取当前内存使用量（MB）"""
-    try:
-        import psutil
-        process = psutil.Process()
-        memory_info = process.memory_info()
-        return memory_info.rss / 1024 / 1024  # 转换为MB
-    except ImportError:
-        return 0.0
-
-
-def _process_batch(batch_paths: List[str], batch_timestamps: List[Optional[dt.datetime]],
-                 ref_pts_target: np.ndarray, config: Dict[str, Any], start_idx: int = 0) -> Tuple[List[np.ndarray], List[np.ndarray], List[Optional[dt.datetime]]]:
-    """处理单个批次的图像"""
-    from align import warp_with_similarity
-    from detect import LandmarkDetector
-    
-    # 加载当前批次图像
-    batch_images = _load_images(batch_paths)
-    
-    # 检测人脸关键点
-    detector = LandmarkDetector()
-    batch_detections = []
-    for img in batch_images:
-        batch_detections.append(detector.detect(img))
-    detector.close()
-    
-    batch_face_points = [d.face_points for d in batch_detections]
-    
-    # 对齐图像
-    aligned_images = []
-    aligned_points = []
-    aligned_timestamps = []
-    
-    width = int(config.get("width", 1080))
-    height = int(config.get("height", 1350))
-    
-    for i, (img, pts) in enumerate(zip(batch_images, batch_face_points)):
-        if pts is not None and len(pts) >= 300:
-            try:
-                # 对齐到参考图
-                result = warp_with_similarity(img, pts, ref_pts_target, (height, width))
-                if result is not None:
-                    aligned_img, aligned_pts = result
-                    aligned_images.append(aligned_img)
-                    aligned_points.append(aligned_pts)
-                    aligned_timestamps.append(batch_timestamps[i])
-            except Exception as e:
-                # 忽略对齐失败的图像
-                print(f"警告：图像 {i} 对齐失败: {e}")
-                continue
-        else:
-            # 人脸检测或关键点检测失败
-            filename = os.path.basename(batch_paths[i])
-            global_index = start_idx + i  # 计算全局索引
-            print(f"警告：图像 {global_index} 人脸检测或关键点检测失败，文件: {filename}")
-            continue
-    
-    # 释放当前批次的内存
-    del batch_images
-    del batch_detections
-    del batch_face_points
-    gc.collect()
-    
-    return aligned_images, aligned_points, aligned_timestamps
 
 
 def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[ProgressCallback] = None) -> Dict[str, Any]:
@@ -201,7 +109,7 @@ def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[Progr
         first_batch_timestamps = timestamps[:batch_size]
         
         # 加载第一批次图像
-        first_batch_images = _load_images(first_batch_paths)
+        first_batch_images = load_images(first_batch_paths)
         
         # 检测第一批次人脸关键点
         detector = LandmarkDetector()
@@ -233,7 +141,7 @@ def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[Progr
         ref_batch_timestamps = timestamps[ref_batch_start:ref_batch_end]
         
         # 加载参考批次图像
-        ref_batch_images = _load_images(ref_batch_paths)
+        ref_batch_images = load_images(ref_batch_paths)
         
         # 检测参考批次人脸关键点
         detector = LandmarkDetector()
@@ -288,7 +196,7 @@ def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[Progr
         report(0.02 + (batch_idx / total_batches) * 0.6, f"处理批次 {batch_idx+1}/{total_batches}...")
         
         # 处理当前批次
-        aligned_images, aligned_points, aligned_timestamps = _process_batch(
+        aligned_images, aligned_points, aligned_timestamps = process_batch(
             batch_paths, batch_timestamps, ref_pts_target, config, start_idx
         )
         
@@ -298,7 +206,7 @@ def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[Progr
         all_aligned_timestamps.extend(aligned_timestamps)
         
         # 显示内存使用情况
-        memory_usage = _get_memory_usage()
+        memory_usage = get_memory_usage()
         if memory_usage > 0:
             report(0.02 + (batch_idx / total_batches) * 0.6, f"处理批次 {batch_idx+1}/{total_batches}... (内存: {memory_usage:.1f}MB)")
         
@@ -310,7 +218,7 @@ def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[Progr
 
     # Morph frames
     report(0.62, "生成过渡帧...")
-    frames: List[np.ndarray] = []
+    streaming_save: bool = bool(config.get("streaming_save", False))
     if morph == "flow":
         transitions = len(all_aligned_images) - 1
         expected = video_fps * transition_seconds * transitions + int(hold_seconds * video_fps * transitions)
@@ -331,10 +239,6 @@ def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[Progr
             ease_p3=ease_p3,
             use_gpu=use_gpu,
         )
-        for f in gen:
-            frames.append(f)
-            ratio = min(1.0, len(frames) / max(1, expected))
-            report(0.62 + 0.3 * ratio, "生成过渡帧...")
     else:
         expected = video_fps * transition_seconds * (len(all_aligned_images) - 1) + int(hold_seconds * video_fps * (len(all_aligned_images) - 1))
         gen = generate_crossfade_frames(
@@ -349,35 +253,81 @@ def _run_pipeline_in_batches(config: Dict[str, Any], progress_cb: Optional[Progr
             ease_p1=ease_p1,
             ease_p3=ease_p3,
         )
+    
+    # 流式保存或批量保存
+    if streaming_save:
+        # 流式保存，逐帧写入以减少内存使用
+        def frame_generator_with_progress():
+            frame_count = 0
+            for f in gen:
+                frame_count += 1
+                ratio = min(1.0, frame_count / max(1, expected))
+                report(0.62 + 0.3 * ratio, "生成过渡帧...")
+                yield f
+        
+        # Save outputs
+        report(0.95, "保存结果...")
+        ensure_dir(output_dir_abs)
+        gif_path = os.path.join(output_dir_abs, "morph.gif")
+        mp4_path = os.path.join(output_dir_abs, "morph.mp4")
+        
+        # 收集帧数据用于GIF生成
+        frames = []
+        
+        # 定义一个包装生成器，同时收集帧数据
+        def collecting_generator():
+            for f in frame_generator_with_progress():
+                frames.append(f)
+                yield f
+        
+        # 流式保存MP4
+        try:
+            save_mp4_streaming(collecting_generator(), mp4_path, fps=video_fps, progress_cb=lambda frame_count, msg: report(0.95 + 0.03 * min(1.0, frame_count / max(1, expected)), msg))
+        except Exception as e:
+            print(f"流式保存MP4失败: {e}")
+            # 回退到批量保存
+            frames = list(gen)
+            save_mp4(frames, mp4_path, fps=video_fps)
+        
+        # 如果需要生成GIF，使用收集到的帧数据
+        if generate_gif and frames:
+            try:
+                save_gif(frames, gif_path, fps=gif_fps)
+            except Exception as e:
+                print(f"GIF保存失败: {e}")
+    else:
+        # 批量保存
+        frames: List[np.ndarray] = []
         for f in gen:
             frames.append(f)
             ratio = min(1.0, len(frames) / max(1, expected))
             report(0.62 + 0.3 * ratio, "生成过渡帧...")
-
-    # Save outputs
-    report(0.95, "保存结果...")
-    ensure_dir(output_dir_abs)
-    gif_path = os.path.join(output_dir_abs, "morph.gif")
-    mp4_path = os.path.join(output_dir_abs, "morph.mp4")
-
-    # 使用并行保存函数保存GIF和MP4
-    try:
-        if generate_gif:
-            save_outputs_parallel(frames, gif_path, mp4_path, gif_fps=gif_fps, mp4_fps=video_fps, progress_cb=lambda p, msg: report(0.95 + 0.03 * p, msg))
-        else:
-            # 只保存MP4
-            gif_path = None  # 不生成GIF时设为None
-            save_mp4(frames, mp4_path, fps=video_fps)
-    except Exception as e:
-        print(f"保存文件时出错: {e}")
-        # 回退到原来的保存方式
-        if generate_gif:
-            save_gif(frames, gif_path, fps=gif_fps)
+        
+        # Save outputs
+        report(0.95, "保存结果...")
+        ensure_dir(output_dir_abs)
+        gif_path = os.path.join(output_dir_abs, "morph.gif")
+        mp4_path = os.path.join(output_dir_abs, "morph.mp4")
+        
+        # 使用并行保存函数保存GIF和MP4
         try:
-            save_mp4(frames, mp4_path, fps=video_fps)
-        except Exception:
-            pass
+            if generate_gif:
+                save_outputs_parallel(frames, gif_path, mp4_path, gif_fps=gif_fps, mp4_fps=video_fps, progress_cb=lambda p, msg: report(0.95 + 0.03 * p, msg))
+            else:
+                # 只保存MP4
+                gif_path = None  # 不生成GIF时设为None
+                save_mp4(frames, mp4_path, fps=video_fps)
+        except Exception as e:
+            print(f"保存文件时出错: {e}")
+            # 回退到原来的保存方式
+            if generate_gif:
+                save_gif(frames, gif_path, fps=gif_fps)
+            try:
+                save_mp4(frames, mp4_path, fps=video_fps)
+            except Exception:
+                pass
 
+    # 保存对齐后的图像
     if save_aligned:
         aligned_dir = os.path.join(output_dir_abs, "aligned")
         ensure_dir(aligned_dir)
@@ -428,6 +378,7 @@ def run_pipeline(config: Dict[str, Any], progress_cb: Optional[ProgressCallback]
         use_gpu: bool = bool(config.get("use_gpu", False))
         save_aligned: bool = bool(config.get("save_aligned", False))
         generate_gif: bool = bool(config.get("generate_gif", True))
+        streaming_save: bool = bool(config.get("streaming_save", False))
         batch_size: int = int(config.get("batch_size", 50))
 
         # normalize output_dir to absolute to ensure download links are valid regardless of cwd
@@ -443,7 +394,7 @@ def run_pipeline(config: Dict[str, Any], progress_cb: Optional[ProgressCallback]
             report(0.01, f"图像数量较多({len(image_paths)}张)，将分批处理以避免内存不足")
             return _run_pipeline_in_batches(config, progress_cb)
 
-        images = _load_images(image_paths)
+        images = load_images(image_paths)
         
         # 提取时间戳信息
         timestamps = extract_timestamps(image_paths, sort)
@@ -558,7 +509,6 @@ def run_pipeline(config: Dict[str, Any], progress_cb: Optional[ProgressCallback]
 
         # Morph frames
         report(0.02 + w_detect + w_align + 0.01, "生成过渡帧...")
-        frames: List[np.ndarray] = []
         if morph == "flow":
             transitions = len(aligned_images) - 1
             expected = video_fps * transition_seconds * transitions + int(hold_seconds * video_fps * transitions)
@@ -579,10 +529,6 @@ def run_pipeline(config: Dict[str, Any], progress_cb: Optional[ProgressCallback]
                 ease_p3=ease_p3,
                 use_gpu=use_gpu,
             )
-            for f in gen:
-                frames.append(f)
-                ratio = min(1.0, len(frames) / max(1, expected))
-                report(0.02 + w_detect + w_align + w_morph * ratio, "生成过渡帧...")
         else:
             expected = video_fps * transition_seconds * (len(aligned_images) - 1) + int(hold_seconds * video_fps * (len(aligned_images) - 1))
             gen = generate_crossfade_frames(
@@ -597,35 +543,81 @@ def run_pipeline(config: Dict[str, Any], progress_cb: Optional[ProgressCallback]
                 ease_p1=ease_p1,
                 ease_p3=ease_p3,
             )
+        
+        # 流式保存或批量保存
+        if streaming_save:
+            # 流式保存，逐帧写入以减少内存使用
+            def frame_generator_with_progress():
+                frame_count = 0
+                for f in gen:
+                    frame_count += 1
+                    ratio = min(1.0, frame_count / max(1, expected))
+                    report(0.02 + w_detect + w_align + w_morph * ratio, "生成过渡帧...")
+                    yield f
+            
+            # Save outputs
+            report(0.98, "保存结果...")
+            ensure_dir(output_dir_abs)
+            gif_path = os.path.join(output_dir_abs, "morph.gif")
+            mp4_path = os.path.join(output_dir_abs, "morph.mp4")
+            
+            # 收集帧数据用于GIF生成
+            frames = []
+            
+            # 定义一个包装生成器，同时收集帧数据
+            def collecting_generator():
+                for f in frame_generator_with_progress():
+                    frames.append(f)
+                    yield f
+            
+            # 流式保存MP4
+            try:
+                save_mp4_streaming(collecting_generator(), mp4_path, fps=video_fps, progress_cb=lambda frame_count, msg: report(0.98 + 0.02 * min(1.0, frame_count / max(1, expected)), msg))
+            except Exception as e:
+                print(f"流式保存MP4失败: {e}")
+                # 回退到批量保存
+                frames = list(gen)
+                save_mp4(frames, mp4_path, fps=video_fps)
+            
+            # 如果需要生成GIF，使用收集到的帧数据
+            if generate_gif and frames:
+                try:
+                    save_gif(frames, gif_path, fps=gif_fps)
+                except Exception as e:
+                    print(f"GIF保存失败: {e}")
+        else:
+            # 批量保存
+            frames: List[np.ndarray] = []
             for f in gen:
                 frames.append(f)
                 ratio = min(1.0, len(frames) / max(1, expected))
                 report(0.02 + w_detect + w_align + w_morph * ratio, "生成过渡帧...")
-
-        # Save outputs
-        report(0.98, "保存结果...")
-        ensure_dir(output_dir_abs)
-        gif_path = os.path.join(output_dir_abs, "morph.gif")
-        mp4_path = os.path.join(output_dir_abs, "morph.mp4")
-
-        # 使用并行保存函数保存GIF和MP4
-        try:
-            if generate_gif:
-                save_outputs_parallel(frames, gif_path, mp4_path, gif_fps=gif_fps, mp4_fps=video_fps, progress_cb=lambda p, msg: report(0.98 + 0.02 * p, msg))
-            else:
-                # 只保存MP4
-                gif_path = None  # 不生成GIF时设为None
-                save_mp4(frames, mp4_path, fps=video_fps)
-        except Exception as e:
-            print(f"保存文件时出错: {e}")
-            # 回退到原来的保存方式
-            if generate_gif:
-                save_gif(frames, gif_path, fps=gif_fps)
+            
+            # Save outputs
+            report(0.98, "保存结果...")
+            ensure_dir(output_dir_abs)
+            gif_path = os.path.join(output_dir_abs, "morph.gif")
+            mp4_path = os.path.join(output_dir_abs, "morph.mp4")
+            
+            # 使用并行保存函数保存GIF和MP4
             try:
-                save_mp4(frames, mp4_path, fps=video_fps)
-            except Exception:
-                pass
+                if generate_gif:
+                    save_outputs_parallel(frames, gif_path, mp4_path, gif_fps=gif_fps, mp4_fps=video_fps, progress_cb=lambda p, msg: report(0.98 + 0.02 * p, msg))
+                else:
+                    # 只保存MP4
+                    gif_path = None  # 不生成GIF时设为None
+                    save_mp4(frames, mp4_path, fps=video_fps)
+            except Exception as e:
+                print(f"保存文件时出错: {e}")
+                # 回退到原来的保存方式
+                if generate_gif:
+                    save_gif(frames, gif_path, fps=gif_fps)
+                try:
+                    save_mp4(frames, mp4_path, fps=video_fps)
+                except Exception:
+                    pass
 
+        # 保存对齐后的图像
         if save_aligned:
             aligned_dir = os.path.join(output_dir_abs, "aligned")
             ensure_dir(aligned_dir)
