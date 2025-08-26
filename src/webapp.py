@@ -175,6 +175,7 @@ legend{font-size:14px;color:#444}
     <label>保存对齐帧: <input type="checkbox" name="save_aligned" {% if save_aligned %}checked{% endif %}></label>
     <label>生成GIF: <input type="checkbox" name="generate_gif" {% if generate_gif %}checked{% endif %}></label>
     <label>流式保存(减少内存): <input type="checkbox" name="streaming_save" {% if streaming_save %}checked{% endif %}></label><br/>
+    <label>批处理大小: <input type="number" name="batch_size" value="{{batch_size}}"></label><br/>
   </fieldset>
   <button type="submit">开始生成</button>
 </form>
@@ -259,7 +260,7 @@ DEFAULTS = {
     "sort": "name",
     "width": 1080,
     "height": 1350,
-    "subject_scale": 0.55,
+    "subject_scale": 0.75,
     "transition_seconds": 0.4,
     "hold_seconds": 0.7,
     "gif_fps": 15,
@@ -273,11 +274,12 @@ DEFAULTS = {
     "ease_b": 0.6,
     "ease_p1": 2.5,
     "ease_p3": 0.6,
-    "use_gpu": False,
+    "use_gpu": True,
     "save_aligned": False,
-    "generate_gif": True,
-    "streaming_save": False,
+    "generate_gif": False,
+    "streaming_save": True,
     "ref_index": "",
+    "batch_size": 50,
 }
 
 @app.route("/", methods=["GET"])
@@ -303,7 +305,6 @@ def run():
         if v is None:
             if k in ("use_gpu", "save_aligned", "generate_gif", "streaming_save"):
                 cfg[k] = False
-            elif k == "ref_index":
                 cfg[k] = None  # 空字符串转换为None
             else:
                 cfg[k] = DEFAULTS[k]
@@ -319,6 +320,12 @@ def run():
                         cfg[k] = int(v)
                     except ValueError:
                         cfg[k] = None
+            elif k == "batch_size":
+                # 处理batch_size参数
+                try:
+                    cfg[k] = int(v)
+                except ValueError:
+                    cfg[k] = DEFAULTS[k]
             else:
                 cfg[k] = v
     

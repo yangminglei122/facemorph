@@ -5,6 +5,7 @@ uploads/
 images2/
 images3/
 logs/
+output/aligned/
 src/__pycache__/
 __pycache__/
 output.log

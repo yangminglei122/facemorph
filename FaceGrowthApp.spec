@@ -23,6 +23,7 @@ datas = [
     ('src', 'src'),
     ('scripts/logging_hook.py', 'scripts'),
     ('ref', 'ref'),
+    ('./ref/ref_image.jpg', 'ref'),
 ] + mediapipe_datas
 
 hiddenimports = [
